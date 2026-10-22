@@ -1,0 +1,26 @@
+# личные данные и настройки агента — в репозиторий не попадают
+settings.json
+plugins.json
+profiles.json
+prompts.json
+model_prompts.json
+apps.json
+memory.json
+reminders.json
+pronounce.json
+macros.json
+notes.txt
+metrics.csv
+actions.log
+last_screenshot.jpg
+dialogs/
+agent_files/
+avatar/
+components/
+plugins/data/
+*.bak
+*.part
+__pycache__/
+build/
+dist/
+*.spec
