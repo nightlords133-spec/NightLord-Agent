@@ -39,6 +39,12 @@ PACKAGES = [
     ("winrt-runtime", ("winrt.runtime", "winsdk"), "системный медиа-центр Windows (основа)", False, WIN, "media_player"),
     ("winrt-Windows.Media.Control", ("winrt.windows.media.control", "winsdk"), "«что играет», управление плеером", False, WIN, "media_player"),
     ("winrt-Windows.Foundation", ("winrt.windows.foundation", "winsdk"), "типы WinRT для плеера", False, WIN, "media_player"),
+    ("winrt-Windows.Media.Ocr", ("winrt.windows.media.ocr", "winsdk"), "встроенное распознавание текста Windows (чтение экрана)", False, WIN, "screen_ocr"),
+    ("winrt-Windows.Graphics.Imaging", ("winrt.windows.graphics.imaging", "winsdk"), "картинки для распознавания текста", False, WIN, "screen_ocr"),
+    ("winrt-Windows.Storage.Streams", ("winrt.windows.storage.streams", "winsdk"), "потоки для распознавания текста", False, WIN, "screen_ocr"),
+    ("winrt-Windows.Globalization", ("winrt.windows.globalization", "winsdk"), "языки распознавания текста", False, WIN, "screen_ocr"),
+    ("uiautomation", ("uiautomation",), "дерево элементов окон Windows (инструмент «Зрение»)", False, WIN, "screen_vision"),
+    ("yt-dlp", ("yt_dlp",), "субтитры и звук видео для пересказа (YouTube, VK Видео, Rutube)", False, ANY, "video_summary"),
     ("pyinstaller", ("PyInstaller",), "сборка агента в exe (py build_exe.py)", False, ANY, ""),
     ("nvidia-cublas-cu12", ("nvidia.cublas",), "Whisper на GPU (CUDA 12), только Windows/Linux с NVIDIA", False, ANY, ""),
     ("nvidia-cudnn-cu12==9.*", ("nvidia.cudnn",), "Whisper на GPU (CUDA 12), только Windows/Linux с NVIDIA", False, ANY, ""),
@@ -51,6 +57,11 @@ PLUGIN_NEEDS = {
     "mail_calendar": ("requests",), "mcp": ("requests",), "media_player": ("winrt-runtime", "winrt-Windows.Media.Control",
                                                                          "winrt-Windows.Foundation"),
     "model_watch": ("requests",), "palworld": ("requests",), "palworld_guide": ("requests",), "search_api": ("requests",),
+    "calc_convert": (), "file_tools": (), "net_check": ("requests",), "weather_rates": ("requests",),
+    "screen_ocr": ("pillow", "winrt-Windows.Media.Ocr", "winrt-Windows.Graphics.Imaging", "winrt-Windows.Storage.Streams",
+                   "winrt-Windows.Globalization"),
+    "video_summary": ("requests", "yt-dlp"),
+    "screen_vision": ("pillow", "uiautomation"),
     "system_ctl": (), "telegram": ("requests",), "vk": ("requests",), "vpn_proxy": ("requests",),
     "web_chat": ("numpy",),
 }
@@ -151,7 +162,7 @@ def check_plugins(have, bundled):
     for n in names:
         miss = [p for p in PLUGIN_NEEDS.get(n, ()) if p not in have]
         ver = bundled.get(n, "")
-        if n == "media_player" and not IS_WIN:
+        if n in ("media_player", "screen_ocr", "screen_vision") and not IS_WIN:
             note = "работает только в Windows"
             print(f"{WARN} {n:<16} {ver:<5} {note}")
             continue
