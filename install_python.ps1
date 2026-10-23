@@ -1,7 +1,13 @@
 ﻿# Установка Python 3.12 для Nightlord агента (Windows 10/11, без прав администратора).
 # Порядок: 1) уже стоит? 2) winget  3) официальный установщик с python.org (проверяется хэш и подпись).
 # Запуск: двойной щелчок по install_python.bat
+param([switch]$NoPrompt)     # -NoPrompt: без вопросов и пауз (так его запускает установщик с окном)
 $ErrorActionPreference = "Stop"
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+function Pause-Exit([int]$code) {
+    if (-not $NoPrompt) { Read-Host "Нажмите Enter, чтобы закрыть" | Out-Null }
+    exit $code
+}
 $Url  = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 $Md5  = "5eddb0b6f12c852725de071ae681dde4"      # с официальной страницы python.org/downloads/release/python-31210/
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -50,8 +56,7 @@ if ($py) {
         } catch {
             Write-Host "Не удалось скачать: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "Скачайте вручную: $Url  (или включите VPN) и запустите скрипт ещё раз."
-            Read-Host "Нажмите Enter, чтобы закрыть"
-            exit 1
+            Pause-Exit 1
         }
         $hash = (Get-FileHash -Algorithm MD5 -Path $exe).Hash.ToLower()
         $sig = Get-AuthenticodeSignature -FilePath $exe
@@ -59,8 +64,7 @@ if ($py) {
         if ($hash -ne $Md5 -or -not $sigOk) {
             Write-Host "Файл не прошёл проверку (хэш: $hash, подпись: $($sig.Status)). Установка отменена." -ForegroundColor Red
             Remove-Item $exe -ErrorAction SilentlyContinue
-            Read-Host "Нажмите Enter, чтобы закрыть"
-            exit 1
+            Pause-Exit 1
         }
         Write-Host "Хэш и подпись Python Software Foundation в порядке. Устанавливаю..."
         $p = Start-Process -FilePath $exe -ArgumentList "/quiet", "InstallAllUsers=0", "PrependPath=1", "Include_launcher=1",
@@ -68,21 +72,20 @@ if ($py) {
         Remove-Item $exe -ErrorAction SilentlyContinue
         if ($p.ExitCode -ne 0) {
             Write-Host "Установщик завершился с кодом $($p.ExitCode)." -ForegroundColor Red
-            Read-Host "Нажмите Enter, чтобы закрыть"
-            exit 1
+            Pause-Exit 1
         }
         Refresh-Path
         $py = Find-Python312
     }
     if (-not $py) {
         Write-Host "Python 3.12 установлен, но не найден в этой сессии. Закройте окно и запустите скрипт ещё раз." -ForegroundColor Yellow
-        Read-Host "Нажмите Enter, чтобы закрыть"
-        exit 1
+        Pause-Exit 1
     }
     Write-Host "Готово: $py" -ForegroundColor Green
 }
 
 & $py --version
+if ($NoPrompt) { Write-Host "PYTHON_OK=$py"; exit 0 }
 $ans = Read-Host "Установить пакеты для агента сейчас (check_deps.py --yes)? [Д/н]"
 if ($ans -eq "" -or $ans -match "^(д|да|y|yes)$") {
     $deps = Join-Path $Here "check_deps.py"
@@ -90,4 +93,4 @@ if ($ans -eq "" -or $ans -match "^(д|да|y|yes)$") {
 }
 Write-Host ""
 Write-Host "Запуск агента: start_agent.bat  (или: py -3.12 voice_agent.py)" -ForegroundColor Cyan
-Read-Host "Нажмите Enter, чтобы закрыть"
+Pause-Exit 0

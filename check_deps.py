@@ -11,6 +11,7 @@
 import argparse
 import importlib.metadata as md
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -173,7 +174,28 @@ def main():
     ap.add_argument("--yes", "-y", action="store_true", help="ставить недостающее без вопросов")
     ap.add_argument("--check", action="store_true", help="только проверить")
     ap.add_argument("--required", action="store_true", help="с --yes: ставить только обязательное")
+    ap.add_argument("--json", action="store_true", help="вывести состояние пакетов в JSON (для установщика с окном)")
     args = ap.parse_args()
+
+    if args.json:
+        try:
+            import tkinter  # noqa: F401
+            has_tk = True
+        except ImportError:
+            has_tk = False
+        ver, bundled = agent_info()
+        rows = []
+        for row in PACKAGES:
+            if not applicable(row):
+                continue
+            pip_name, mods, why, required, _, plug = row
+            ok = has_module(mods)
+            rows.append({"pip": pip_name, "required": required, "installed": ok, "version": version_of(pip_name) if ok else "",
+                         "why": why, "plugins": plug,
+                         "default": not pip_name.startswith(("nvidia-", "pyinstaller"))})
+        print(json.dumps({"python": sys.version.split()[0], "executable": sys.executable, "tkinter": has_tk,
+                          "agent_version": ver, "packages": rows}, ensure_ascii=False))
+        return 0
 
     print(f"Python {sys.version.split()[0]} ({sys.executable})")
     ver, bundled = agent_info()

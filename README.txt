@@ -6,6 +6,9 @@ Nightlord агент — сборка от 20.10.2026 (версия 2026.10.22)
                                     python build_exe.py --onefile  (один файл)
                      Иконку берёт из nightlord.ico, если файл лежит рядом.
   check_deps.py    — проверка зависимостей
+  Установщик.bat   — УСТАНОВЩИК С ОКНОМ (запускайте его): шаг 1 — Python 3.12, шаг 2 — пакеты (галочки), шаг 3 — ярлык и
+                     запуск, шаг 4 — сборка в exe. Нужны рядом: install_gui.ps1, install_python.ps1, check_deps.py, build_exe.py.
+                     Работает на встроенном PowerShell, Python для самого установщика не нужен.
   install_python.bat — установка Python 3.12 одним щелчком (winget или установщик с python.org с проверкой хэша и подписи),
                      затем предлагает поставить пакеты через check_deps.py
   start_agent.bat  — запуск агента: py -3.12 voice_agent.py
