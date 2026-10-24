@@ -52,7 +52,11 @@ function Get-Deps([string]$py) {
     if (-not $py -or -not (Test-Path $deps)) { $script:depsErr = "нет check_deps.py рядом с установщиком"; return $null }
     try {
         $r = Run-Quick $py @($deps, "--json") $script:depsTimeoutMs
-        if ($r.TimedOut) { $script:depsErr = "проверка не уложилась в $([int]($script:depsTimeoutMs / 1000)) с и была остановлена"; return $null }
+        if ($r.TimedOut) {
+            $tail = ($r.Err.Trim() -split "`r?`n" | Select-Object -Last 14) -join " | "
+            $script:depsErr = "проверка не уложилась в $([int]($script:depsTimeoutMs / 1000)) с и была остановлена. Последнее, что она делала: $tail"
+            return $null
+        }
         if ($r.Code -ne 0) { $script:depsErr = "check_deps.py завершился с кодом $($r.Code): " + ($r.Err.Trim() -replace "\s+", " "); return $null }
         return $r.Text | ConvertFrom-Json
     } catch { $script:depsErr = $_.Exception.Message; return $null }

@@ -189,21 +189,31 @@ def main():
     args = ap.parse_args()
 
     if args.json:
+        import faulthandler
+        faulthandler.dump_traceback_later(25, exit=False, file=sys.stderr)       # если зависли — в журнал установщика попадёт, где именно
+
+        def step(t):
+            sys.stderr.write(f"[шаг] {t}\n")
+            sys.stderr.flush()
+        step("tkinter")
         try:
             import tkinter  # noqa: F401
             has_tk = True
         except ImportError:
             has_tk = False
+        step("чтение voice_agent.py")
         ver, bundled = agent_info()
         rows = []
         for row in PACKAGES:
             if not applicable(row):
                 continue
             pip_name, mods, why, required, _, plug = row
+            step(f"пакет {pip_name}")
             ok = has_module(mods)
             rows.append({"pip": pip_name, "required": required, "installed": ok, "version": version_of(pip_name) if ok else "",
                          "why": why, "plugins": plug,
                          "default": not pip_name.startswith(("nvidia-", "pyinstaller"))})
+        faulthandler.cancel_dump_traceback_later()
         print(json.dumps({"python": sys.version.split()[0], "executable": sys.executable, "tkinter": has_tk,
                           "agent_version": ver, "packages": rows}, ensure_ascii=False))
         return 0
