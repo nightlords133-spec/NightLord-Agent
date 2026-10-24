@@ -148,8 +148,8 @@ $script:cur = $null
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Установщик Nightlord агента"
 $form.StartPosition = "CenterScreen"
-$form.ClientSize = New-Object System.Drawing.Size(780, 900)
-$form.MinimumSize = New-Object System.Drawing.Size(780, 760)
+$form.ClientSize = New-Object System.Drawing.Size(780, 924)
+$form.MinimumSize = New-Object System.Drawing.Size(780, 784)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 $ico = Join-Path $Here "nightlord.ico"
 if (Test-Path $ico) { try { $form.Icon = New-Object System.Drawing.Icon($ico) } catch {} }
@@ -178,19 +178,20 @@ function New-Chk($parent, $text, $x, $y, $w) {
 }
 
 # --- 0. доступ к интернету (VPN)
-$g0 = New-Group "Доступ к интернету (если python.org, PyPI или GitHub не открываются)" 4 96
+$g0 = New-Group "Доступ к интернету (если python.org, PyPI или GitHub не открываются)" 4 128
 $lblV = New-Lbl $g0 "Ссылка vless:// (vmess, trojan, ss), адрес подписки или готовый HTTP-прокси 127.0.0.1:10809:" 14 22 726 20
 $txtV = New-Object System.Windows.Forms.TextBox
 $txtV.Location = New-Object System.Drawing.Point(14, 44); $txtV.Size = New-Object System.Drawing.Size(560, 26); $txtV.UseSystemPasswordChar = $true
 $g0.Controls.Add($txtV)
 $chkShow = New-Chk $g0 "показать" 584 44 150
-$btnVc = New-Btn $g0 "Подключить" 14 68 150
-$btnVa = New-Btn $g0 "Взять из агента" 172 68 170
-$btnVd = New-Btn $g0 "Отключить" 350 68 150
-$lblVs = New-Lbl $g0 "Не подключено (нужно только если сайты не открываются)." 510 74 236 20
+$btnVc = New-Btn $g0 "Подключить" 14 68 130
+$btnVf = New-Btn $g0 "Найти прокси / клиент" 152 68 190
+$btnVa = New-Btn $g0 "Взять из агента" 350 68 150
+$btnVd = New-Btn $g0 "Отключить" 508 68 120
+$lblVs = New-Lbl $g0 "Не подключено (нужно только если сайты не открываются). Можно вписать просто номер порта клиента, например 10809." 14 102 726 20
 $lblVs.ForeColor = [System.Drawing.Color]::Gray
-$g0.Size = New-Object System.Drawing.Size(756, 104)
-$script:dy = 106
+$g0.Size = New-Object System.Drawing.Size(756, 128)
+$script:dy = 130
 
 # --- 1. Python
 $g1 = New-Group "1. Python 3.12" 10 78
@@ -226,12 +227,12 @@ $lblExe.ForeColor = [System.Drawing.Color]::Gray
 
 # --- журнал
 $bar = New-Object System.Windows.Forms.ProgressBar
-$bar.Style = "Marquee"; $bar.MarqueeAnimationSpeed = 0; $bar.Location = New-Object System.Drawing.Point(12, 696)
+$bar.Style = "Marquee"; $bar.MarqueeAnimationSpeed = 0; $bar.Location = New-Object System.Drawing.Point(12, 720)
 $bar.Size = New-Object System.Drawing.Size(756, 8); $bar.Anchor = "Top,Left,Right"
 $form.Controls.Add($bar)
 $log = New-Object System.Windows.Forms.TextBox
 $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = "Vertical"; $log.Font = New-Object System.Drawing.Font("Consolas", 9)
-$log.Location = New-Object System.Drawing.Point(12, 710); $log.Size = New-Object System.Drawing.Size(756, 184)
+$log.Location = New-Object System.Drawing.Point(12, 734); $log.Size = New-Object System.Drawing.Size(756, 184)
 $log.Anchor = "Top,Bottom,Left,Right"; $log.BackColor = [System.Drawing.Color]::White
 $form.Controls.Add($log)
 
@@ -247,7 +248,7 @@ function Apply-Enabled {
     $bar.MarqueeAnimationSpeed = $(if ($busy -or $script:vpnBusy) { 30 } else { 0 })
     $vp = [bool]$script:vpnAvail
     $btnVc.Enabled = ($vp -and -not $busy -and -not $script:vpnBusy -and -not $script:vpnOn)
-    $btnVa.Enabled = $btnVc.Enabled; $txtV.Enabled = (-not $script:vpnOn -and -not $script:vpnBusy)
+    $btnVa.Enabled = $btnVc.Enabled; $btnVf.Enabled = $btnVc.Enabled; $txtV.Enabled = (-not $script:vpnOn -and -not $script:vpnBusy)
     $btnVd.Enabled = ($vp -and $script:vpnOn -and -not $busy)
 }
 function Set-Busy([bool]$on) { Apply-Enabled }
@@ -340,7 +341,7 @@ function Refresh-All-Inner {
 }
 
 # ---- VPN
-$script:vpnOn = $false; $script:vpnBusy = $false; $script:vpnCore = $null; $script:vpnState = $null; $script:vpnPs = $null; $script:vpnLogged = 0
+$script:vpnOn = $false; $script:vpnBusy = $false; $script:scanState = $null; $script:vpnCore = $null; $script:vpnState = $null; $script:vpnPs = $null; $script:vpnLogged = 0
 $chkShow.Add_CheckedChanged({ $txtV.UseSystemPasswordChar = -not $chkShow.Checked })
 $vpnTimer = New-Object System.Windows.Forms.Timer; $vpnTimer.Interval = 400
 $vpnTimer.Add_Tick({
@@ -372,6 +373,58 @@ $btnVc.Add_Click({
     $ps = [PowerShell]::Create(); $ps.Runspace = $rs
     [void]$ps.AddScript({ param($lib, $here, $text, $st) . $lib; Connect-Vpn $here $text $st }).AddArgument($script:vpnLib).AddArgument($Here).AddArgument($text).AddArgument($st)
     $script:vpnPs = $ps; $script:vpnAsync = $ps.BeginInvoke(); $vpnTimer.Start()
+})
+$btnVf.Add_Click({
+    $script:vpnBusy = $true; $lblVs.ForeColor = [System.Drawing.Color]::DimGray; $lblVs.Text = "Ищу прокси на этом ПК…"; Apply-Enabled
+    $st = [hashtable]::Synchronized(@{ Status = "Ищу…"; Log = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList)); Done = $false; Error = ""; Result = @() })
+    $script:scanState = $st; $script:scanLogged = 0
+    $rs = [RunspaceFactory]::CreateRunspace(); $rs.ApartmentState = "STA"; $rs.Open()
+    $ps = [PowerShell]::Create(); $ps.Runspace = $rs
+    [void]$ps.AddScript({ param($lib, $st) . $lib; Scan-LocalProxies $st }).AddArgument($script:vpnLib).AddArgument($st)
+    $script:scanPs = $ps; $script:scanAsync = $ps.BeginInvoke(); $scanTimer.Start()
+})
+function Pick-Proxy($items) {
+    $f = New-Object System.Windows.Forms.Form
+    $f.Text = "Найденные прокси"; $f.StartPosition = "CenterParent"; $f.ClientSize = New-Object System.Drawing.Size(520, 250); $f.FormBorderStyle = "FixedDialog"
+    $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.Font = $form.Font
+    $l = New-Object System.Windows.Forms.Label; $l.Text = "Выберите прокси для скачивания:"; $l.Location = New-Object System.Drawing.Point(12, 10); $l.Size = New-Object System.Drawing.Size(490, 22); $f.Controls.Add($l)
+    $lb = New-Object System.Windows.Forms.ListBox; $lb.Location = New-Object System.Drawing.Point(12, 36); $lb.Size = New-Object System.Drawing.Size(496, 160); $f.Controls.Add($lb)
+    foreach ($i in $items) { [void]$lb.Items.Add("127.0.0.1:$($i.Port)  —  $($i.Client)") }
+    $lb.SelectedIndex = 0
+    $ok = New-Object System.Windows.Forms.Button; $ok.Text = "Выбрать"; $ok.Location = New-Object System.Drawing.Point(300, 208); $ok.Size = New-Object System.Drawing.Size(100, 30); $ok.DialogResult = "OK"; $f.Controls.Add($ok)
+    $cn = New-Object System.Windows.Forms.Button; $cn.Text = "Отмена"; $cn.Location = New-Object System.Drawing.Point(408, 208); $cn.Size = New-Object System.Drawing.Size(100, 30); $cn.DialogResult = "Cancel"; $f.Controls.Add($cn)
+    $f.AcceptButton = $ok; $f.CancelButton = $cn
+    $r = $f.ShowDialog($form); $idx = $lb.SelectedIndex; $f.Dispose()
+    if ($r -eq "OK" -and $idx -ge 0) { return $items[$idx] } else { return $null }
+}
+$scanTimer = New-Object System.Windows.Forms.Timer; $scanTimer.Interval = 300
+$scanTimer.Add_Tick({
+    $st = $script:scanState; if (-not $st) { $scanTimer.Stop(); return }
+    while ($script:scanLogged -lt $st.Log.Count) { $script:scanLogged++ }
+    $lblVs.Text = [string]$st.Status
+    if (-not $st.Done) { return }
+    $scanTimer.Stop()
+    try { $script:scanPs.EndInvoke($script:scanAsync) } catch {}
+    try { $script:scanPs.Runspace.Close(); $script:scanPs.Dispose() } catch {}
+    $script:vpnBusy = $false; $script:scanState = $null
+    $found = @($st.Result)
+    $http = @($found | Where-Object { $_.Kind -eq "http" }); $other = @($found | Where-Object { $_.Kind -ne "http" })
+    if ($st.Error) { $lblVs.Text = "Поиск не удался"; Log "Поиск прокси: $($st.Error)" }
+    elseif ($http.Count) {
+        $pick = $(if ($http.Count -eq 1) { $http[0] } else { Pick-Proxy $http })
+        if ($pick) {
+            $txtV.Text = "http://127.0.0.1:$($pick.Port)"; $lblVs.ForeColor = [System.Drawing.Color]::DarkGreen
+            $lblVs.Text = "Нашёл: 127.0.0.1:$($pick.Port) ($($pick.Client)). Нажмите «Подключить»."
+            Log "Нашёл рабочий HTTP-прокси: 127.0.0.1:$($pick.Port) — $($pick.Client)"
+        } else { $lblVs.Text = "Выбор отменён." }
+    } else {
+        $lblVs.ForeColor = [System.Drawing.Color]::DarkRed; $lblVs.Text = "Рабочий HTTP-прокси не найден."
+        $msg = "Рабочий HTTP-прокси на этом ПК не найден."
+        if ($other.Count) { $msg += "`n`nНайдено, но не подходит:`n" + (($other | ForEach-Object { "127.0.0.1:$($_.Port) — $($_.Client): " + $(if ($_.Kind -eq "socks") { "это SOCKS; нужен HTTP (в v2rayN — порт 10809, в Hiddify/Clash/NekoBox включите «смешанный» порт)" } else { "это HTTP-прокси, но он не открывает python.org (VPN в клиенте выключен?)" }) }) -join "`n") }
+        else { $msg += "`n`nЗапустите клиент (v2rayN, Hiddify, NekoBox, Clash…), включите в нём VPN и нажмите поиск ещё раз, либо вставьте ссылку vless:// или подписку." }
+        [System.Windows.Forms.MessageBox]::Show($msg, "Поиск прокси") | Out-Null
+    }
+    Apply-Enabled
 })
 $btnVa.Add_Click({
     $l = Get-AgentVpnLink $Here

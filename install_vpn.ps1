@@ -135,6 +135,7 @@ function Classify-VpnInput([string]$s) {
     if (-not $s) { return "none" }
     if ($s -match "^(vless|vmess|trojan|ss)://") { return "link" }
     if ($s -match "^socks\w*://") { return "socks" }
+    if ($s -match "^\d{2,5}$") { return "proxy" }              # просто номер порта: 10809 -> 127.0.0.1:10809
     if ($s -match "^(http|https)://[^/]+/?$" -or $s -match "^[\w.\-]+:\d{2,5}$") { return "proxy" }
     if ($s -match "^https?://[^/]+/.+") { return "subscription" }
     return "none"
@@ -142,6 +143,7 @@ function Classify-VpnInput([string]$s) {
 
 function Normalize-Proxy([string]$s) {
     $s = $s.Trim().TrimEnd("/")
+    if ($s -match "^\d{2,5}$") { $s = "127.0.0.1:$s" }
     if ($s -notmatch "^[a-z0-9]+://") { $s = "http://$s" }
     return $s
 }
@@ -306,4 +308,92 @@ function Connect-Vpn([string]$here, [string]$text, $state) {
         throw $(if ($lastErr) { $lastErr } else { "ни один сервер не заработал" })
     } catch { $state.Error = $_.Exception.Message }
     finally { $state.Done = $true }
+}
+
+
+# ---------------------------------------------------------------- поиск готового прокси / клиента
+$script:KnownPorts = @(
+    @{ Port = 10809; Client = "v2rayN (HTTP)" }, @{ Port = 10808; Client = "v2rayN (SOCKS)" }, @{ Port = 12334; Client = "Hiddify" },
+    @{ Port = 2080; Client = "NekoBox / Nekoray" }, @{ Port = 7890; Client = "Clash / Mihomo" }, @{ Port = 7897; Client = "Clash Verge" },
+    @{ Port = 20171; Client = "v2rayA (HTTP)" }, @{ Port = 20170; Client = "v2rayA (SOCKS)" }, @{ Port = 1080; Client = "SOCKS по умолчанию" },
+    @{ Port = 8080; Client = "HTTP по умолчанию" }, @{ Port = 8888; Client = "Fiddler / прокси" }, @{ Port = 3128; Client = "Squid" },
+    @{ Port = 10818; Client = "ядро VPN агента" }, @{ Port = 8118; Client = "Privoxy" })
+$script:ClientProcs = @("v2rayN", "Hiddify", "HiddifyCli", "nekoray", "nekobox", "Throne", "clash-verge", "clash", "mihomo", "verge-mihomo", "v2rayA",
+                        "xray", "sing-box", "happ", "Happ", "Flclash", "FlClash", "winws")
+
+function Probe-Proxy([int]$port, [int]$timeoutMs = 3000) {
+    # -> "http" (CONNECT прошёл), "http-deny" (HTTP-прокси, но туннель не открыл), "socks", "closed", "other"
+    if (-not (Test-PortOpen $port)) { return "closed" }
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $c.Connect("127.0.0.1", $port); $c.ReceiveTimeout = $timeoutMs; $c.SendTimeout = $timeoutMs
+        $ns = $c.GetStream()
+        $req = [Text.Encoding]::ASCII.GetBytes("CONNECT www.python.org:443 HTTP/1.1`r`nHost: www.python.org:443`r`n`r`n")
+        $ns.Write($req, 0, $req.Length)
+        $buf = New-Object byte[] 256
+        try { $n = $ns.Read($buf, 0, 256) } catch { $n = 0 }
+        if ($n -ge 12) {
+            $t = [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+            if ($t -match "^HTTP/1\.[01] 200") { return "http" }
+            if ($t -match "^HTTP/1\.[01] \d{3}") { return "http-deny" }
+        }
+    } catch {} finally { try { $c.Close() } catch {} }
+    # SOCKS5: приветствие 05 01 00 -> ответ 05 00
+    $c = New-Object Net.Sockets.TcpClient
+    try {
+        $c.Connect("127.0.0.1", $port); $c.ReceiveTimeout = 1500
+        $ns = $c.GetStream(); $hello = [byte[]](5, 1, 0); $ns.Write($hello, 0, 3)
+        $buf = New-Object byte[] 4
+        try { $n = $ns.Read($buf, 0, 4) } catch { $n = 0 }
+        if ($n -ge 2 -and $buf[0] -eq 5) { return "socks" }
+    } catch {} finally { try { $c.Close() } catch {} }
+    return "other"
+}
+
+function Get-ClientListeners {
+    # Порты, которые слушают известные VPN-клиенты (только Windows). -> @{ Port; Client }
+    $out = @()
+    if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) { return $out }
+    try {
+        $procs = @{}; foreach ($p in (Get-Process -ErrorAction SilentlyContinue)) { if ($script:ClientProcs -contains $p.ProcessName) { $procs[$p.Id] = $p.ProcessName } }
+        if (-not $procs.Count) { return $out }
+        foreach ($c in (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue)) {
+            if ($procs.ContainsKey([int]$c.OwningProcess) -and ($c.LocalAddress -in @("127.0.0.1", "0.0.0.0", "::1", "::"))) {
+                $out += @{ Port = [int]$c.LocalPort; Client = $procs[[int]$c.OwningProcess] }
+            }
+        }
+    } catch {}
+    return $out
+}
+
+function Get-SystemProxyPort {
+    # Системный прокси Windows (Параметры -> Сеть -> Прокси), если он на этом же ПК -> порт или 0
+    try {
+        $k = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" -ErrorAction Stop
+        if ($k.ProxyEnable -eq 1 -and $k.ProxyServer -match "(?:^|;|=)(?:https?=)?(?:127\.0\.0\.1|localhost):(\d{2,5})") { return [int]$Matches[1] }
+    } catch {}
+    return 0
+}
+
+function Find-LocalProxies([scriptblock]$report, $extraPorts = @()) {
+    # Ищет рабочий HTTP-прокси на этом ПК: известные порты клиентов, порты запущенных клиентов, системный прокси. -> массив @{ Port; Client; Kind }
+    $cand = [ordered]@{}           # ключ — номер порта СТРОКОЙ (целое число в [ordered] означало бы позицию)
+    foreach ($k in $script:KnownPorts) { $cand["$($k.Port)"] = $k.Client }
+    foreach ($l in (Get-ClientListeners)) { $key = "$($l.Port)"; if (-not $cand.Contains($key) -or $cand[$key] -like "*по умолчанию*") { $cand[$key] = "запущен " + $l.Client } }
+    $sp = Get-SystemProxyPort; if ($sp) { $cand["$sp"] = "системный прокси Windows" }
+    foreach ($e in $extraPorts) { if (-not $cand.Contains("$e")) { $cand["$e"] = "порт $e" } }
+    $found = @()
+    foreach ($key in @($cand.Keys)) {
+        $port = [int]$key
+        & $report "Проверяю порт $port ($($cand[$key]))…"
+        $kind = Probe-Proxy $port
+        if ($kind -in @("http", "http-deny", "socks")) { $found += @{ Port = $port; Client = $cand[$key]; Kind = $kind }; & $report "  порт ${port}: $kind" }
+    }
+    return $found
+}
+
+function Scan-LocalProxies($state) {
+    # Фоновый поиск для окна. $state: Status, Log, Done, Error, Result
+    $report = { param($m) $state.Status = $m; [void]$state.Log.Add($m) }
+    try { $state.Result = @(Find-LocalProxies $report) } catch { $state.Error = $_.Exception.Message } finally { $state.Done = $true }
 }
