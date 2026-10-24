@@ -72,13 +72,33 @@ IS_WIN = os.name == "nt"
 
 
 def has_module(name):
-    """name — модуль или кортеж модулей (достаточно любого)."""
+    """name — модуль или кортеж модулей (достаточно любого). Родительские пакеты НЕ импортируются:
+    find_spec("a.b.c") импортирует a и a.b, а у winrt-* это может зависнуть, поэтому ищем по файлам."""
     if isinstance(name, (tuple, list)):
         return any(has_module(n) for n in name)
+    parts = str(name).split(".")
     try:
-        return importlib.util.find_spec(name) is not None
+        spec = importlib.util.find_spec(parts[0])
     except (ImportError, ValueError, AttributeError):
         return False
+    if spec is None:
+        return False
+    if len(parts) == 1:
+        return True
+    locs = list(spec.submodule_search_locations or [])
+    for i, part in enumerate(parts[1:], 1):
+        nxt, found = [], False
+        for loc in locs:
+            d = os.path.join(loc, part)
+            if os.path.isdir(d):
+                nxt.append(d)
+                found = True
+            elif i == len(parts) - 1 and any(os.path.isfile(os.path.join(loc, part + ext)) for ext in (".py", ".pyd", ".pyc")):
+                return True
+        if not found:
+            return False
+        locs = nxt
+    return True
 
 
 def version_of(pip_name):
@@ -216,7 +236,9 @@ def main():
         faulthandler.cancel_dump_traceback_later()
         print(json.dumps({"python": sys.version.split()[0], "executable": sys.executable, "tkinter": has_tk,
                           "agent_version": ver, "packages": rows}, ensure_ascii=False))
-        return 0
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)             # не ждём фоновых потоков импортированных библиотек: из-за них процесс мог не завершаться
 
     print(f"Python {sys.version.split()[0]} ({sys.executable})")
     ver, bundled = agent_info()
