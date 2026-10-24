@@ -204,6 +204,8 @@ $clb = New-Object System.Windows.Forms.CheckedListBox
 $clb.Location = New-Object System.Drawing.Point(14, 24); $clb.Size = New-Object System.Drawing.Size(726, 190)
 $clb.CheckOnClick = $true; $clb.IntegralHeight = $false; $clb.Anchor = "Top,Left,Right"
 $g2.Controls.Add($clb)
+$script:depMap = New-Object System.Collections.ArrayList
+$clb.Add_ItemCheck({ param($s, $e) $m = $script:depMap; if ($e.Index -lt $m.Count -and -not $m[$e.Index]) { $e.NewValue = $e.CurrentValue } })    # заголовки разделов не отмечаются
 $btnAll = New-Btn $g2 "Отметить недостающее" 14 222 190
 $btnRe = New-Btn $g2 "Проверить заново" 212 222 160
 $btnDeps = New-Btn $g2 "Установить отмеченное" 548 222 192
@@ -318,7 +320,7 @@ function Refresh-All-Inner {
         $lblPy.ForeColor = [System.Drawing.Color]::DarkRed
         $btnPy.Text = "Установить Python 3.12"
     }
-    $clb.Items.Clear(); $script:deps = $null; $lblDeps.Text = ""
+    $clb.Items.Clear(); $script:deps = $null; $script:depMap = New-Object System.Collections.ArrayList; $lblDeps.Text = ""
     Apply-Enabled
     if (-not $script:py) { [void]$clb.Items.Add("Сначала установите Python (шаг 1)"); return }
     $clb.Items.Clear(); [void]$clb.Items.Add("Проверяю пакеты…"); $form.Refresh()
@@ -327,12 +329,18 @@ function Refresh-All-Inner {
     if (-not $d) { [void]$clb.Items.Add("Не удалось получить список пакетов: $script:depsErr"); Log "Проверка пакетов: $script:depsErr"; return }
     Log ("Проверка заняла {0:N1} с" -f $sw.Elapsed.TotalSeconds)
     $script:deps = $d
-    foreach ($p in $d.packages) {
-        $state = $(if ($p.installed) { "установлен $($p.version)" } else { "НЕ УСТАНОВЛЕН" })
-        $req = $(if ($p.required) { "обязательный" } else { "необязательный" })
-        $line = "{0}  —  {1}  [{2}, {3}]" -f $p.pip, $p.why, $req, $state
-        $idx = $clb.Items.Add($line)
-        if (-not $p.installed -and $p.default) { $clb.SetItemChecked($idx, $true) }
+    $script:depMap = New-Object System.Collections.ArrayList
+    foreach ($grp in @(@{ Req = $true; Title = "ОБЯЗАТЕЛЬНЫЕ — без них агент не запустится" }, @{ Req = $false; Title = "НЕОБЯЗАТЕЛЬНЫЕ — добавляют возможности, можно поставить позже" })) {
+        $items = @($d.packages | Where-Object { [bool]$_.required -eq $grp.Req })
+        if (-not $items.Count) { continue }
+        $have = @($items | Where-Object { $_.installed }).Count
+        [void]$clb.Items.Add("━━  $($grp.Title)  (установлено $have из $($items.Count))  ━━"); [void]$script:depMap.Add($null)
+        foreach ($p in $items) {
+            $state = $(if ($p.installed) { "[есть $($p.version)]" } else { "[НЕТ]" })
+            $for = $(if ($p.plugins) { "  (для: $($p.plugins))" } else { "" })
+            $idx = $clb.Items.Add(("{0}  {1}  —  {2}{3}" -f $state, $p.pip, $p.why, $for)); [void]$script:depMap.Add($p)
+            if (-not $p.installed -and $p.default) { $clb.SetItemChecked($idx, $true) }
+        }
     }
     $miss = @($d.packages | Where-Object { -not $_.installed -and $_.required }).Count
     $lblDeps.Text = "Python $($d.python)" + $(if ($d.tkinter) { "" } else { ", но НЕТ tkinter — переустановите Python (шаг 1)" }) +
@@ -448,15 +456,15 @@ $btnPy.Add_Click({
 $btnRe.Add_Click({ Refresh-All })
 $btnAll.Add_Click({
     if (-not $script:deps) { return }
-    for ($i = 0; $i -lt $script:deps.packages.Count; $i++) {
-        $p = $script:deps.packages[$i]
+    for ($i = 0; $i -lt $script:depMap.Count; $i++) {
+        $p = $script:depMap[$i]; if (-not $p) { continue }
         $clb.SetItemChecked($i, [bool](-not $p.installed -and $p.default))
     }
 })
 $btnDeps.Add_Click({
     if (-not $script:deps) { return }
     $sel = @()
-    for ($i = 0; $i -lt $script:deps.packages.Count; $i++) { if ($clb.GetItemChecked($i)) { $sel += $script:deps.packages[$i].pip } }
+    for ($i = 0; $i -lt $script:depMap.Count; $i++) { if ($script:depMap[$i] -and $clb.GetItemChecked($i)) { $sel += $script:depMap[$i].pip } }
     if ($sel.Count -eq 0) { [System.Windows.Forms.MessageBox]::Show("Ничего не отмечено.", "Установщик") | Out-Null; return }
     $script:selPkgs = $sel
     $all = @("-m", "pip", "install", "--upgrade-strategy", "only-if-needed") + $sel
