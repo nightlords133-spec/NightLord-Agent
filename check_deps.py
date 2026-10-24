@@ -28,7 +28,7 @@ PACKAGES = [
     ("sounddevice", ("sounddevice",), "микрофон и воспроизведение", True, ANY, ""),
     ("soundfile", ("soundfile",), "чтение/запись звука (в т. ч. голосовые Telegram в формате Opus)", True, ANY, "telegram, web_chat"),
     ("faster-whisper", ("faster_whisper",), "распознавание речи", True, ANY, ""),
-    ("pillow", ("PIL",), "скриншоты и спрайты аватара (экран, 2D-аватар)", False, ANY, "dating_check, telegram (скриншоты)"),
+    ("pillow", ("PIL",), "скриншоты и спрайты аватара (экран, 2D-аватар)", False, ANY, "dating_check, telegram (скриншоты), match3, screen_vision"),
     ("pynput", ("pynput",), "горячая клавиша, управление мышью и клавиатурой", False, ANY, ""),
     ("nvidia-ml-py", ("pynvml",), "мониторинг видеокарты NVIDIA", False, ANY, ""),
     ("sv-ttk", ("sv_ttk",), "современная тема окна (светлая/тёмная)", False, ANY, ""),
@@ -62,6 +62,7 @@ PLUGIN_NEEDS = {
                    "winrt-Windows.Globalization"),
     "video_summary": ("requests", "yt-dlp"),
     "screen_vision": ("pillow", "uiautomation"),
+    "match3": ("pillow",),
     "system_ctl": (), "telegram": ("requests",), "vk": ("requests",), "vpn_proxy": ("requests",),
     "web_chat": ("numpy",),
 }
