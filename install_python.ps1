@@ -29,6 +29,9 @@ function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
 }
 
+if ($env:NL_PROXY) {      # прокси, который включил установщик (VPN): для скачивания с python.org
+    try { [Net.WebRequest]::DefaultWebProxy = New-Object Net.WebProxy($env:NL_PROXY, $true); Write-Host "Скачивание идёт через прокси $($env:NL_PROXY)" -ForegroundColor Cyan } catch {}
+}
 Write-Host ""
 Write-Host "=== Установка Python 3.12 ===" -ForegroundColor Cyan
 $py = Find-Python312
@@ -37,7 +40,7 @@ if ($py) {
 } else {
     $done = $false
     # --- winget
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
+    if ((Get-Command winget -ErrorAction SilentlyContinue) -and -not $env:NL_PROXY) {      # winget прокси установщика не использует
         Write-Host "Ставлю через winget (может появиться окно подтверждения)..."
         try {
             & winget install -e --id Python.Python.3.12 --scope user --silent --accept-package-agreements --accept-source-agreements

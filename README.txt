@@ -9,6 +9,8 @@ Nightlord агент — сборка от 23.10.2026 (версия 2026.10.23)
   Установщик.bat   — УСТАНОВЩИК С ОКНОМ (запускайте его): шаг 1 — Python 3.12, шаг 2 — пакеты (галочки), шаг 3 — ярлык и
                      запуск, шаг 4 — сборка в exe. Нужны рядом: install_gui.ps1, install_python.ps1, check_deps.py, build_exe.py.
                      Работает на встроенном PowerShell, Python для самого установщика не нужен.
+  install_vpn.ps1  — модуль VPN для установщика (нужен рядом с install_gui.ps1): ссылка vless/vmess/trojan/ss, подписка или готовый HTTP-прокси;
+                     ядро Xray скачивается с GitHub в папку vpn_core. Трафик pip и Python идёт через него. Ничего не сохраняется, при закрытии отключается.
   install_python.bat — установка Python 3.12 одним щелчком (winget или установщик с python.org с проверкой хэша и подписи),
                      затем предлагает поставить пакеты через check_deps.py
   start_agent.bat  — запуск агента: py -3.12 voice_agent.py

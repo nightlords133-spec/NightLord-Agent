@@ -14,6 +14,8 @@ function Refresh-Path {
 }
 
 $script:gui = $false
+$script:vpnLib = Join-Path $Here "install_vpn.ps1"
+if (Test-Path $script:vpnLib) { . $script:vpnLib; $script:vpnAvail = $true } else { $script:vpnAvail = $false }
 $script:depsTimeoutMs = 90000
 function Run-Quick([string]$exe, [string[]]$argList, [int]$timeoutMs) {
     # Запускает короткую команду и ждёт не дольше timeoutMs; окно за это время остаётся живым (DoEvents). -> @{ Code; Text; TimedOut }
@@ -146,15 +148,16 @@ $script:cur = $null
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Установщик Nightlord агента"
 $form.StartPosition = "CenterScreen"
-$form.ClientSize = New-Object System.Drawing.Size(780, 800)
-$form.MinimumSize = New-Object System.Drawing.Size(780, 700)
+$form.ClientSize = New-Object System.Drawing.Size(780, 900)
+$form.MinimumSize = New-Object System.Drawing.Size(780, 760)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
 $ico = Join-Path $Here "nightlord.ico"
 if (Test-Path $ico) { try { $form.Icon = New-Object System.Drawing.Icon($ico) } catch {} }
 
+$script:dy = 0
 function New-Group($text, $y, $h) {
     $g = New-Object System.Windows.Forms.GroupBox
-    $g.Text = $text; $g.Location = New-Object System.Drawing.Point(12, $y); $g.Size = New-Object System.Drawing.Size(756, $h)
+    $g.Text = $text; $g.Location = New-Object System.Drawing.Point(12, ($y + $script:dy)); $g.Size = New-Object System.Drawing.Size(756, $h)
     $g.Anchor = "Top,Left,Right"
     $form.Controls.Add($g); return $g
 }
@@ -173,6 +176,21 @@ function New-Chk($parent, $text, $x, $y, $w) {
     $c.Text = $text; $c.Location = New-Object System.Drawing.Point($x, $y); $c.Size = New-Object System.Drawing.Size($w, 24)
     $parent.Controls.Add($c); return $c
 }
+
+# --- 0. доступ к интернету (VPN)
+$g0 = New-Group "Доступ к интернету (если python.org, PyPI или GitHub не открываются)" 4 96
+$lblV = New-Lbl $g0 "Ссылка vless:// (vmess, trojan, ss), адрес подписки или готовый HTTP-прокси 127.0.0.1:10809:" 14 22 726 20
+$txtV = New-Object System.Windows.Forms.TextBox
+$txtV.Location = New-Object System.Drawing.Point(14, 44); $txtV.Size = New-Object System.Drawing.Size(560, 26); $txtV.UseSystemPasswordChar = $true
+$g0.Controls.Add($txtV)
+$chkShow = New-Chk $g0 "показать" 584 44 150
+$btnVc = New-Btn $g0 "Подключить" 14 68 150
+$btnVa = New-Btn $g0 "Взять из агента" 172 68 170
+$btnVd = New-Btn $g0 "Отключить" 350 68 150
+$lblVs = New-Lbl $g0 "Не подключено (нужно только если сайты не открываются)." 510 74 236 20
+$lblVs.ForeColor = [System.Drawing.Color]::Gray
+$g0.Size = New-Object System.Drawing.Size(756, 104)
+$script:dy = 106
 
 # --- 1. Python
 $g1 = New-Group "1. Python 3.12" 10 78
@@ -208,12 +226,12 @@ $lblExe.ForeColor = [System.Drawing.Color]::Gray
 
 # --- журнал
 $bar = New-Object System.Windows.Forms.ProgressBar
-$bar.Style = "Marquee"; $bar.MarqueeAnimationSpeed = 0; $bar.Location = New-Object System.Drawing.Point(12, 590)
+$bar.Style = "Marquee"; $bar.MarqueeAnimationSpeed = 0; $bar.Location = New-Object System.Drawing.Point(12, 696)
 $bar.Size = New-Object System.Drawing.Size(756, 8); $bar.Anchor = "Top,Left,Right"
 $form.Controls.Add($bar)
 $log = New-Object System.Windows.Forms.TextBox
 $log.Multiline = $true; $log.ReadOnly = $true; $log.ScrollBars = "Vertical"; $log.Font = New-Object System.Drawing.Font("Consolas", 9)
-$log.Location = New-Object System.Drawing.Point(12, 604); $log.Size = New-Object System.Drawing.Size(756, 184)
+$log.Location = New-Object System.Drawing.Point(12, 710); $log.Size = New-Object System.Drawing.Size(756, 184)
 $log.Anchor = "Top,Bottom,Left,Right"; $log.BackColor = [System.Drawing.Color]::White
 $form.Controls.Add($log)
 
@@ -226,7 +244,11 @@ function Apply-Enabled {
     $havePy = [bool]$script:py
     $btnPy.Enabled = -not $busy; $btnRe.Enabled = -not $busy
     foreach ($b in @($btnAll, $btnDeps, $btnLnk, $btnRun, $btnExe)) { $b.Enabled = ((-not $busy) -and $havePy) }
-    $bar.MarqueeAnimationSpeed = $(if ($busy) { 30 } else { 0 })
+    $bar.MarqueeAnimationSpeed = $(if ($busy -or $script:vpnBusy) { 30 } else { 0 })
+    $vp = [bool]$script:vpnAvail
+    $btnVc.Enabled = ($vp -and -not $busy -and -not $script:vpnBusy -and -not $script:vpnOn)
+    $btnVa.Enabled = $btnVc.Enabled; $txtV.Enabled = (-not $script:vpnOn -and -not $script:vpnBusy)
+    $btnVd.Enabled = ($vp -and $script:vpnOn -and -not $busy)
 }
 function Set-Busy([bool]$on) { Apply-Enabled }
 
@@ -317,6 +339,49 @@ function Refresh-All-Inner {
     if (Test-Path (Join-Path $Here "voice_agent.py")) { } else { $lblDeps.Text += ". ВНИМАНИЕ: voice_agent.py рядом не найден" }
 }
 
+# ---- VPN
+$script:vpnOn = $false; $script:vpnBusy = $false; $script:vpnCore = $null; $script:vpnState = $null; $script:vpnPs = $null; $script:vpnLogged = 0
+$chkShow.Add_CheckedChanged({ $txtV.UseSystemPasswordChar = -not $chkShow.Checked })
+$vpnTimer = New-Object System.Windows.Forms.Timer; $vpnTimer.Interval = 400
+$vpnTimer.Add_Tick({
+    $st = $script:vpnState; if (-not $st) { $vpnTimer.Stop(); return }
+    while ($script:vpnLogged -lt $st.Log.Count) { Log $st.Log[$script:vpnLogged]; $script:vpnLogged++ }
+    $lblVs.Text = [string]$st.Status
+    if (-not $st.Done) { return }
+    $vpnTimer.Stop()
+    try { $script:vpnPs.EndInvoke($script:vpnAsync) } catch {}
+    try { $script:vpnPs.Runspace.Close(); $script:vpnPs.Dispose() } catch {}
+    $script:vpnBusy = $false
+    if ($st.Error) {
+        $lblVs.Text = "Не подключилось"; $lblVs.ForeColor = [System.Drawing.Color]::DarkRed
+        Log "VPN: $($st.Error)"
+    } else {
+        $script:vpnOn = $true; $script:vpnCore = $st.Core; $script:vpnUrl = $st.Proxy; Set-ProxyEnv $st.Proxy
+        $lblVs.Text = "Подключено: $($st.Proxy)"; $lblVs.ForeColor = [System.Drawing.Color]::DarkGreen
+        Log "VPN подключён. Скачивание Python и пакетов пойдёт через $($st.Proxy). Теперь нажмите «Проверить заново»."
+    }
+    $script:vpnState = $null; Apply-Enabled
+})
+$btnVc.Add_Click({
+    $text = $txtV.Text.Trim()
+    if (-not $text) { [System.Windows.Forms.MessageBox]::Show("Вставьте ссылку vless://…, адрес подписки или адрес HTTP-прокси.", "Установщик") | Out-Null; return }
+    $script:vpnBusy = $true; $lblVs.ForeColor = [System.Drawing.Color]::DimGray; $lblVs.Text = "Подключаюсь…"; Apply-Enabled
+    $st = [hashtable]::Synchronized(@{ Status = "Подключаюсь…"; Log = [System.Collections.ArrayList]::Synchronized((New-Object System.Collections.ArrayList)); Done = $false; Error = ""; Proxy = ""; Core = $null })
+    $script:vpnState = $st; $script:vpnLogged = 0
+    $rs = [RunspaceFactory]::CreateRunspace(); $rs.ApartmentState = "STA"; $rs.Open()
+    $ps = [PowerShell]::Create(); $ps.Runspace = $rs
+    [void]$ps.AddScript({ param($lib, $here, $text, $st) . $lib; Connect-Vpn $here $text $st }).AddArgument($script:vpnLib).AddArgument($Here).AddArgument($text).AddArgument($st)
+    $script:vpnPs = $ps; $script:vpnAsync = $ps.BeginInvoke(); $vpnTimer.Start()
+})
+$btnVa.Add_Click({
+    $l = Get-AgentVpnLink $Here
+    if ($l) { $txtV.Text = $l; Log "Взял настройки VPN из плагина агента." } else { [System.Windows.Forms.MessageBox]::Show("В папке агента нет настроек VPN (plugins\data\vpn_proxy). Вставьте ссылку вручную.", "Установщик") | Out-Null }
+})
+$btnVd.Add_Click({
+    Stop-XrayCore $script:vpnCore; $script:vpnCore = $null; Clear-ProxyEnv; $script:vpnOn = $false
+    $lblVs.Text = "Отключено."; $lblVs.ForeColor = [System.Drawing.Color]::Gray; Log "VPN отключён."; Apply-Enabled
+})
+
 # ---- кнопки
 $btnPy.Add_Click({
     $ps1 = Join-Path $Here "install_python.ps1"
@@ -362,7 +427,9 @@ $btnRun.Add_Click({
     $va = Join-Path $Here "voice_agent.py"
     if (-not (Test-Path $va)) { [System.Windows.Forms.MessageBox]::Show("Рядом нет voice_agent.py", "Установщик") | Out-Null; return }
     $exe = $(if ($chkCon.Checked) { $script:py } else { Get-Pyw $script:py })
+    if ($script:vpnOn) { Clear-ProxyEnv }            # агенту прокси установщика не передаём: у него свой плагин «VPN / прокси»
     Start-Process -FilePath $exe -ArgumentList ('"' + $va + '"') -WorkingDirectory $Here
+    if ($script:vpnOn) { Set-ProxyEnv $script:vpnUrl }
     Log "Агент запущен."
 })
 $btnExe.Add_Click({
@@ -387,6 +454,7 @@ $btnDir.Add_Click({
 })
 
 $form.Add_FormClosing({
+    try { Stop-XrayCore $script:vpnCore } catch {}
     if ($script:job -and -not (Job-Finished $script:job)) {
         $a = [System.Windows.Forms.MessageBox]::Show("Идёт установка. Закрыть окно и прервать её?", "Установщик", "YesNo", "Question")
         if ($a -ne "Yes") { $_.Cancel = $true } else { try { $script:job.Proc.Kill() } catch {} }
