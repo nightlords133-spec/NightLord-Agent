@@ -13,26 +13,49 @@ function Refresh-Path {
     if ($m -or $u) { $env:Path = "$m;$u" }
 }
 
+$script:gui = $false
+$script:depsTimeoutMs = 90000
+function Run-Quick([string]$exe, [string[]]$argList, [int]$timeoutMs) {
+    # Запускает короткую команду и ждёт не дольше timeoutMs; окно за это время остаётся живым (DoEvents). -> @{ Code; Text; TimedOut }
+    $job = Start-Job2 $exe $argList $null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $job.Proc.HasExited -and $sw.ElapsedMilliseconds -lt $timeoutMs) {
+        Start-Sleep -Milliseconds 80
+        if ($script:gui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
+    $timedOut = -not $job.Proc.HasExited
+    if ($timedOut) { try { $job.Proc.Kill() } catch {}; Start-Sleep -Milliseconds 200 }
+    $out = Read-Tail $job "Out"; $err = Read-Tail $job "Err"
+    $code = $(if ($timedOut) { -1 } else { $job.Proc.ExitCode })
+    Job-Cleanup $job
+    return @{ Code = $code; Text = $out; Err = $err; TimedOut = $timedOut }
+}
+
 function Find-Python312 {
-    try {
-        $p = & py -3.12 -c "import sys;print(sys.executable)" 2>$null
-        if ($LASTEXITCODE -eq 0 -and $p) { return ($p | Select-Object -First 1).Trim() }
-    } catch {}
     foreach ($c in @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", "$env:ProgramFiles\Python312\python.exe")) {
         if ($c -and (Test-Path $c)) { return $c }
     }
+    try {
+        $r = Run-Quick "py" @("-3.12", "-c", "import sys;print(sys.executable)") 15000
+        if (-not $r.TimedOut -and $r.Code -eq 0 -and $r.Text) {
+            $p = ($r.Text -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 1).Trim()
+            if ($p -and (Test-Path $p)) { return $p }
+        }
+    } catch {}
     return $null
 }
 
 function Get-Deps([string]$py) {
-    # Состояние пакетов от check_deps.py --json; $null, если не получилось.
+    # Состояние пакетов от check_deps.py --json; $null, если не получилось. Ждёт не дольше 90 с и не замораживает окно.
     $deps = Join-Path $Here "check_deps.py"
-    if (-not $py -or -not (Test-Path $deps)) { return $null }
+    $script:depsErr = ""
+    if (-not $py -or -not (Test-Path $deps)) { $script:depsErr = "нет check_deps.py рядом с установщиком"; return $null }
     try {
-        $raw = & $py $deps --json 2>$null
-        if ($LASTEXITCODE -ne 0) { return $null }
-        return ($raw -join "`n") | ConvertFrom-Json
-    } catch { return $null }
+        $r = Run-Quick $py @($deps, "--json") $script:depsTimeoutMs
+        if ($r.TimedOut) { $script:depsErr = "проверка не уложилась в $([int]($script:depsTimeoutMs / 1000)) с и была остановлена"; return $null }
+        if ($r.Code -ne 0) { $script:depsErr = "check_deps.py завершился с кодом $($r.Code): " + ($r.Err.Trim() -replace "\s+", " "); return $null }
+        return $r.Text | ConvertFrom-Json
+    } catch { $script:depsErr = $_.Exception.Message; return $null }
 }
 
 function Quote-Arg([string]$a) { if ($a -match '[\s"]') { return '"' + ($a -replace '"', '\"') + '"' } else { return $a } }
@@ -107,6 +130,7 @@ if ($SelfTest) { return }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+$script:gui = $true
 
 try {
 $script:py = $null
@@ -221,6 +245,9 @@ function Start-Next {
     $timer.Start()
 }
 $timer.Add_Tick({
+    if ($script:refreshing -or $script:inTick) { return }
+    $script:inTick = $true
+    try {
     if (-not $script:job) { $timer.Stop(); return }
     try { Log (Read-Job2 $script:job) } catch {}
     if (Job-Finished $script:job) {
@@ -235,6 +262,7 @@ $timer.Add_Tick({
         if ($done) { try { & $done $code } catch { Log "Ошибка: $($_.Exception.Message)" } }
         if (-not $script:job) { Start-Next }
     }
+    } finally { $script:inTick = $false }
 })
 function Enqueue($title, $exe, $argList, $dir, $onDone) {
     [void]$script:queue.Add(@{ Title = $title; Exe = $exe; Args = $argList; Dir = $dir; OnDone = $onDone })
@@ -243,7 +271,17 @@ function Enqueue($title, $exe, $argList, $dir, $onDone) {
 
 # ---- обновление состояния
 function Refresh-All {
+    if ($script:refreshing) { return }
+    $script:refreshing = $true
+    try { Refresh-All-Inner } finally { $script:refreshing = $false; Apply-Enabled }
+}
+function Refresh-All-Inner {
     Refresh-Path
+    $clb.Items.Clear(); [void]$clb.Items.Add("Проверяю Python и пакеты… (до минуты, окно можно двигать)")
+    $lblPy.Text = "Ищу Python 3.12…"; $lblPy.ForeColor = [System.Drawing.Color]::DimGray
+    $btnPy.Enabled = $false; $btnRe.Enabled = $false; $bar.MarqueeAnimationSpeed = 30
+    $form.Refresh()
+    $sw = [Diagnostics.Stopwatch]::StartNew()
     $script:py = Find-Python312
     if ($script:py) {
         $lblPy.Text = "Python 3.12 установлен: $script:py"; $lblPy.ForeColor = [System.Drawing.Color]::DarkGreen
@@ -256,8 +294,11 @@ function Refresh-All {
     $clb.Items.Clear(); $script:deps = $null; $lblDeps.Text = ""
     Apply-Enabled
     if (-not $script:py) { [void]$clb.Items.Add("Сначала установите Python (шаг 1)"); return }
+    $clb.Items.Clear(); [void]$clb.Items.Add("Проверяю пакеты…"); $form.Refresh()
     $d = Get-Deps $script:py
-    if (-not $d) { [void]$clb.Items.Add("Не удалось получить список пакетов (нет check_deps.py рядом?)"); return }
+    $clb.Items.Clear()
+    if (-not $d) { [void]$clb.Items.Add("Не удалось получить список пакетов: $script:depsErr"); Log "Проверка пакетов: $script:depsErr"; return }
+    Log ("Проверка заняла {0:N1} с" -f $sw.Elapsed.TotalSeconds)
     $script:deps = $d
     foreach ($p in $d.packages) {
         $state = $(if ($p.installed) { "установлен $($p.version)" } else { "НЕ УСТАНОВЛЕН" })
