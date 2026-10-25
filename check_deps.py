@@ -44,6 +44,7 @@ PACKAGES = [
     ("winrt-Windows.Storage.Streams", ("winrt.windows.storage.streams", "winsdk"), "потоки для распознавания текста", False, WIN, "screen_ocr"),
     ("winrt-Windows.Globalization", ("winrt.windows.globalization", "winsdk"), "языки распознавания текста", False, WIN, "screen_ocr"),
     ("uiautomation", ("uiautomation",), "дерево элементов окон Windows (инструмент «Зрение»)", False, WIN, "screen_vision"),
+    ("piper-tts", ("piper",), "встроенный офлайн-голос Piper (агент говорит без Voicebox)", False, ANY, ""),
     ("yt-dlp", ("yt_dlp",), "субтитры и звук видео для пересказа (YouTube, VK Видео, Rutube)", False, ANY, "video_summary"),
     ("pyinstaller", ("PyInstaller",), "сборка агента в exe (py build_exe.py)", False, ANY, ""),
     ("nvidia-cublas-cu12", ("nvidia.cublas",), "Whisper на GPU (CUDA 12), только Windows/Linux с NVIDIA", False, ANY, ""),

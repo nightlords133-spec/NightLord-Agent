@@ -57,7 +57,7 @@ import sounddevice as sd
 import soundfile as sf
 
 # ----------------------------- настройки по умолчанию -----------------------------
-APP_VERSION = "2026.10.24"                # версия программы (показывается в «О программе»)
+APP_VERSION = "2026.10.25"                # версия программы (показывается в «О программе»)
 APP_AUTHOR = "NightLord РВЕ"
 UPDATE_EXTRA_FILES = ("check_deps.py", "build_exe.py", "README.txt", "start_agent.bat", "install_python.bat", "install_python.ps1")
 LM_URL = "http://localhost:1234"         # LM Studio -> Developer -> Start Server
@@ -932,6 +932,193 @@ VB_ENGINE_ALIASES = {"qwen3-tts": "qwen", "qwen3": "qwen", "qwen-tts": "qwen",
 def normalize_engine(name):
     n = (name or "").strip()
     return VB_ENGINE_ALIASES.get(n.lower(), n)
+
+
+# ---------- встроенный TTS: работает без Voicebox ----------
+TTS_ENGINES = {"Авто: Voicebox, а если не запущен — встроенный": "auto",
+               "Только Voicebox (свои клонированные голоса)": "voicebox",
+               "Встроенный Piper (офлайн)": "piper",
+               "Голоса Windows (SAPI)": "windows"}
+PIPER_VOICES = {"Ирина (женский)": "irina", "Дмитрий (мужской)": "dmitri",
+                "Денис (мужской)": "denis", "Руслан (мужской)": "ruslan"}
+TTS_DIR = BASE / "tts_voices"
+_PIPER_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/{v}/medium/ru_RU-{v}-medium"
+_PIPER_CACHE = {}
+_PIPER_LOCK = threading.Lock()
+_WIN_VOICES = []
+
+
+def piper_paths(vid):
+    d = TTS_DIR / "piper"
+    return d / f"ru_RU-{vid}-medium.onnx", d / f"ru_RU-{vid}-medium.onnx.json"
+
+
+def piper_have(vid):
+    a, b = piper_paths(vid)
+    return a.is_file() and b.is_file() and a.stat().st_size > 1_000_000
+
+
+def piper_module_ok():
+    try:
+        import importlib.util
+        return importlib.util.find_spec("piper") is not None
+    except Exception:
+        return False
+
+
+def piper_download(vid, progress=None, proxies=None):
+    """Скачивает голос Piper (≈60 МБ) с HuggingFace; пишет во временный файл и переименовывает."""
+    if vid not in PIPER_VOICES.values():
+        raise ValueError(f"неизвестный голос: {vid}")
+    onnx, cfgp = piper_paths(vid)
+    onnx.parent.mkdir(parents=True, exist_ok=True)
+    base = _PIPER_BASE.format(v=vid)
+    for url, dst in ((base + ".onnx.json", cfgp), (base + ".onnx", onnx)):
+        tmp = dst.with_name(dst.name + ".part")
+        with requests.get(url, stream=True, timeout=30, proxies=proxies) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length") or 0)
+            got = 0
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(1 << 16):
+                    f.write(chunk)
+                    got += len(chunk)
+                    if progress and total:
+                        progress(dst.name, got, total)
+        os.replace(tmp, dst)
+    return onnx
+
+
+def piper_synth(vid, text, rate=1.0):
+    """-> (float32 mono, sample_rate). Поддерживает piper-tts 1.2 (synthesize_stream_raw) и 1.3+ (synthesize)."""
+    if not piper_module_ok():
+        raise RuntimeError("Piper не установлен: нажмите «Установить Piper» (или pip install piper-tts)")
+    if not piper_have(vid):
+        raise RuntimeError(f"голос Piper «{vid}» не скачан: нажмите «Скачать голос»")
+    from piper import PiperVoice
+    rate = min(2.0, max(0.5, float(rate or 1.0)))
+    with _PIPER_LOCK:
+        v = _PIPER_CACHE.get(vid)
+        if v is None:
+            v = _PIPER_CACHE[vid] = PiperVoice.load(str(piper_paths(vid)[0]))
+        sr = int(getattr(getattr(v, "config", None), "sample_rate", 0) or 22050)
+        parts = []
+        if hasattr(v, "synthesize_stream_raw"):
+            try:
+                it = v.synthesize_stream_raw(text, length_scale=1.0 / rate)
+            except TypeError:
+                it = v.synthesize_stream_raw(text)
+            for b in it:
+                parts.append(np.frombuffer(b, dtype=np.int16).astype(np.float32) / 32768.0)
+        else:
+            kw = {}
+            try:
+                from piper import SynthesisConfig
+                kw["syn_config"] = SynthesisConfig(length_scale=1.0 / rate)
+            except Exception:
+                pass
+            for ch in v.synthesize(text, **kw):
+                sr = int(getattr(ch, "sample_rate", sr) or sr)
+                a = getattr(ch, "audio_float_array", None)
+                if a is None:
+                    a = np.frombuffer(ch.audio_int16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                parts.append(np.asarray(a, dtype=np.float32).reshape(-1))
+    if not parts:
+        raise RuntimeError("Piper вернул пустой звук")
+    return np.concatenate(parts), sr
+
+
+def _ps_run(script, env_extra, timeout=40):
+    """Запуск PowerShell со скриптом из временного файла (без проблем с кавычками). Возвращает stdout."""
+    if sys.platform != "win32":
+        raise RuntimeError("голоса Windows доступны только в Windows")
+    import uuid
+    p = Path(tempfile.gettempdir()) / f"nl_tts_{uuid.uuid4().hex}.ps1"
+    p.write_text(script, encoding="utf-8-sig")
+    env = dict(os.environ)
+    env.update(env_extra or {})
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(p)],
+                           capture_output=True, timeout=timeout, env=env,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    finally:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    out = r.stdout.decode("utf-8", "replace")
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr.decode("utf-8", "replace") or out).strip()[:300] or "ошибка PowerShell")
+    return out
+
+
+def windows_voices(refresh=False):
+    """[(имя, культура)] установленных голосов SAPI."""
+    global _WIN_VOICES
+    if _WIN_VOICES and not refresh:
+        return list(_WIN_VOICES)
+    out = _ps_run("[Console]::OutputEncoding=[Text.Encoding]::UTF8\nAdd-Type -AssemblyName System.Speech\n"
+                  "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+                  "foreach($v in $s.GetInstalledVoices()){ if($v.Enabled){ $v.VoiceInfo.Name+'|'+$v.VoiceInfo.Culture.Name } }\n", {})
+    res = []
+    for ln in out.splitlines():
+        if "|" in ln:
+            n, c = ln.strip().split("|", 1)
+            res.append((n, c))
+    _WIN_VOICES = res
+    return list(res)
+
+
+def windows_synth(voice, text, rate=1.0):
+    """Синтез голосами Windows через System.Speech -> wav -> (float32, sr)."""
+    import uuid
+    name = (voice or "").strip()
+    if not name:
+        ru = [n for n, c in windows_voices() if c.lower().startswith("ru")]
+        if not ru:
+            raise RuntimeError("в Windows нет русского голоса (Параметры → Время и язык → Речь → Добавить голоса)")
+        name = ru[0]
+    sapi = int(round((min(2.0, max(0.5, float(rate or 1.0))) - 1.0) * 10))
+    tdir = Path(tempfile.gettempdir())
+    uid = uuid.uuid4().hex
+    txt, wav = tdir / f"nl_tts_{uid}.txt", tdir / f"nl_tts_{uid}.wav"
+    txt.write_text(text, encoding="utf-8")
+    try:
+        _ps_run("Add-Type -AssemblyName System.Speech\n$s=New-Object System.Speech.Synthesis.SpeechSynthesizer\n"
+                "$s.SelectVoice($env:NL_VOICE)\n$s.Rate=[int]$env:NL_RATE\n$s.SetOutputToWaveFile($env:NL_OUT)\n"
+                "$s.Speak([IO.File]::ReadAllText($env:NL_TXT,[Text.Encoding]::UTF8))\n$s.Dispose()\n",
+                {"NL_VOICE": name, "NL_RATE": str(sapi), "NL_OUT": str(wav), "NL_TXT": str(txt)})
+        data, sr = sf.read(str(wav), dtype="float32")
+    finally:
+        for p in (txt, wav):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    if getattr(data, "ndim", 1) > 1:
+        data = data.mean(axis=1)
+    if not len(data):
+        raise RuntimeError("SAPI вернул пустой звук")
+    return data, int(sr)
+
+
+def builtin_order(cfg):
+    """Какие встроенные движки пробовать (в порядке): Piper, если готов, затем SAPI в Windows."""
+    out = []
+    if piper_module_ok() and piper_have(cfg.get("piper_voice") or "irina"):
+        out.append("piper")
+    if sys.platform == "win32":
+        out.append("windows")
+    return out
+
+
+def builtin_synth(kind, cfg, text):
+    rate = cfg.get("tts_rate", 1.0)
+    if kind == "piper":
+        return piper_synth(cfg.get("piper_voice") or "irina", text, rate)
+    if kind == "windows":
+        return windows_synth(cfg.get("win_voice", ""), text, rate)
+    raise ValueError(kind)
 
 
 class VoiceboxError(RuntimeError):
@@ -3838,7 +4025,7 @@ class ExtrasMixin:
             r.raise_for_status()
             if cfg["profile_name"] and cfg["profile_name"] not in self.profile_ids:
                 return "warn", f"голос «{cfg['profile_name']}» не найден — нажмите ⟳ рядом с голосом"
-            audio = self._synth(dict(cfg, vb_method=cfg["vb_method"]), "Проверка связи.")
+            audio = self._synth(dict(cfg, vb_method=cfg["vb_method"], tts_engine="voicebox"), "Проверка связи.")
             if audio is None:
                 return "warn", "Voicebox ответил, но звука нет"
             data, sr = audio
@@ -4476,6 +4663,10 @@ class Extras2Mixin:
         self.upd_token = S(value="")         # нужен только для приватного репозитория
         self.upd_auto = B(value=False)       # раз в сутки при запуске спрашивать о новой версии
         self.upd_last = S(value="")
+        self.tts_engine = S(value=list(TTS_ENGINES)[0])   # встроенный TTS: режим
+        self.piper_voice = S(value=list(PIPER_VOICES)[0])
+        self.win_voice = S(value="")                       # пусто = первый русский голос Windows
+        self.tts_rate = S(value="1.0")
         self.dictating = B(value=False)      # намеренно не сохраняется между запусками
         self._pron, self._pron_on = {}, True
         self._vis_on = True
@@ -4494,7 +4685,8 @@ class Extras2Mixin:
     def _extra2_setting_vars(self):
         return {k: getattr(self, k) for k in (
             "fast_first", "warm_srv", "pron_on", "w_hint", "hint_auto", "denoise_on", "auto_thr", "sel_on",
-            "dict_cmd", "macro_on", "macro_confirm", "avatar_vis", "upd_repo", "upd_branch", "upd_token", "upd_auto", "upd_last")}
+            "dict_cmd", "macro_on", "macro_confirm", "avatar_vis", "upd_repo", "upd_branch", "upd_token", "upd_auto", "upd_last",
+            "tts_engine", "piper_voice", "win_voice", "tts_rate")}
 
     def _extras2_start(self):
         self._pron_on = bool(self.pron_on.get())
@@ -4510,7 +4702,16 @@ class Extras2Mixin:
     def _cfg2(self):
         return dict(fast_first=self.fast_first.get(), w_prompt=self.whisper_prompt(), denoise=self.denoise_on.get(),
                     sel_on=self.sel_on.get(), dict_cmd=self.dict_cmd.get(), macro_on=self.macro_on.get(),
-                    macro_confirm=self.macro_confirm.get())
+                    macro_confirm=self.macro_confirm.get(),
+                    tts_engine=TTS_ENGINES.get(self.tts_engine.get(), "auto"),
+                    piper_voice=PIPER_VOICES.get(self.piper_voice.get(), "irina"),
+                    win_voice=self.win_voice.get().strip(), tts_rate=self._tts_rate_val())
+
+    def _tts_rate_val(self):
+        try:
+            return min(2.0, max(0.5, float(str(self.tts_rate.get()).replace(",", "."))))
+        except ValueError:
+            return 1.0
 
     # ---------- 1. прогрев сервисов ----------
     def warm_servers(self, quiet=False):
@@ -20547,6 +20748,101 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
         self.log.tag_config("tool", foreground="#8a8a8a")
 
     # ---------- «Функции»: то, что вынесено с вкладки «Агент» ----------
+    # ---------- встроенный TTS: кнопки ----------
+    def _tts_status_refresh(self):
+        try:
+            vid = PIPER_VOICES.get(self.piper_voice.get(), "irina")
+            parts = ["Piper: " + ("установлен" if piper_module_ok() else "не установлен"),
+                     "голос " + ("скачан" if piper_have(vid) else "не скачан")]
+            self.tts_piper_lbl.config(text=", ".join(parts))
+        except Exception:
+            pass
+
+    def _tts_bg(self, fn, done=None):
+        def run():
+            try:
+                res = fn()
+                err = None
+            except Exception as e:
+                res, err = None, e
+            def fin():
+                self._tts_status_refresh()
+                if done:
+                    done(res, err)
+            try:
+                self.root.after(0, fin)
+            except Exception:
+                pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def tts_install_piper(self):
+        if getattr(sys, "frozen", False):
+            messagebox.showinfo("Piper", "В собранном exe пакеты ставить нельзя. Запустите агента из Python "
+                                         "или поставьте piper-tts через установщик.")
+            return
+        self.status.set("Ставлю piper-tts (pip)…")
+
+        def work():
+            r = subprocess.run([sys.executable, "-m", "pip", "install", "piper-tts"], capture_output=True, text=True,
+                               timeout=900, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout).strip().splitlines()[-1][:200])
+            return True
+
+        def done(res, err):
+            if err:
+                self.status.set(f"Не удалось поставить Piper: {err}")
+            else:
+                self.status.set("Piper установлен. Теперь скачайте голос (если ещё не скачан).")
+        self._tts_bg(work, done)
+
+    def tts_download_voice(self):
+        vid = PIPER_VOICES.get(self.piper_voice.get(), "irina")
+        self.status.set(f"Скачиваю голос Piper «{vid}»…")
+        last = [0.0]
+
+        def prog(name, got, total):
+            if time.time() - last[0] > 0.5:
+                last[0] = time.time()
+                try:
+                    self.root.after(0, lambda: self.status.set(f"Голос «{vid}»: {got * 100 // total}%"))
+                except Exception:
+                    pass
+
+        def done(res, err):
+            self.status.set(f"Не удалось скачать голос: {err}" if err else f"Голос «{vid}» скачан.")
+        self._tts_bg(lambda: piper_download(vid, prog), done)
+
+    def tts_refresh_windows(self):
+        def done(res, err):
+            if err:
+                self.status.set(f"Голоса Windows: {err}")
+                return
+            self.win_combo["values"] = [n for n, c in res]
+            ru = [n for n, c in res if c.lower().startswith("ru")]
+            if ru and not self.win_voice.get().strip():
+                self.win_voice.set(ru[0])
+            self.status.set("Голоса Windows: " + (", ".join(n for n, c in res) or "не найдено"))
+        self._tts_bg(lambda: windows_voices(True), done)
+
+    def tts_test(self):
+        cfg = self._make_cfg()
+        if cfg.get("tts_engine") in ("voicebox", "auto"):   # кнопка проверяет именно встроенный голос
+            order = builtin_order(cfg)
+            if order:
+                cfg["tts_engine"] = order[0]
+        self.status.set("Проверяю голос…")
+
+        def work():
+            audio = self._synth(cfg, "Привет! Это встроенный голос. Я работаю без интернета и без Voicebox.")
+            if audio and audio[0] is not None:
+                self._play(*audio)
+            return True
+
+        def done(res, err):
+            self.status.set(f"Голос не заработал: {err}" if err else "Голос проверен.")
+        self._tts_bg(work, done)
+
     def _build_moved(self, box):
         pad = {"padx": 6, "pady": 3}
 
@@ -20566,6 +20862,34 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
         ttk.Label(f, text="Метод").grid(row=3, column=0, sticky="w", **pad)
         ttk.Combobox(f, textvariable=self.vb_method, values=list(VB_METHODS), width=50, state="readonly").grid(
             row=3, column=1, columnspan=3, sticky="w", **pad)
+
+        f = box("Голос по умолчанию (встроенный TTS, без Voicebox)", True)
+        ttk.Label(f, text="Режим").grid(row=0, column=0, sticky="w", **pad)
+        ttk.Combobox(f, textvariable=self.tts_engine, values=list(TTS_ENGINES), width=50, state="readonly").grid(
+            row=0, column=1, columnspan=3, sticky="w", **pad)
+        ttk.Label(f, text="Голос Piper").grid(row=1, column=0, sticky="w", **pad)
+        pc = ttk.Combobox(f, textvariable=self.piper_voice, values=list(PIPER_VOICES), width=26, state="readonly")
+        pc.grid(row=1, column=1, sticky="w", **pad)
+        pc.bind("<<ComboboxSelected>>", lambda e: self._tts_status_refresh())
+        self.tts_piper_lbl = ttk.Label(f, text="", foreground="#777")
+        self.tts_piper_lbl.grid(row=1, column=2, columnspan=2, sticky="w", **pad)
+        bf = ttk.Frame(f)
+        bf.grid(row=2, column=1, columnspan=3, sticky="w", **pad)
+        ttk.Button(bf, text="Установить Piper", command=self.tts_install_piper).pack(side="left", padx=(0, 6))
+        ttk.Button(bf, text="Скачать голос (~60 МБ)", command=self.tts_download_voice).pack(side="left")
+        ttk.Label(f, text="Голос Windows").grid(row=3, column=0, sticky="w", **pad)
+        self.win_combo = ttk.Combobox(f, textvariable=self.win_voice, width=26)
+        self.win_combo.grid(row=3, column=1, sticky="w", **pad)
+        ttk.Button(f, text="⟳ список", command=self.tts_refresh_windows).grid(row=3, column=2, sticky="w", **pad)
+        ttk.Label(f, text="пусто — первый русский голос", foreground="#777").grid(row=3, column=3, sticky="w", **pad)
+        ttk.Label(f, text="Скорость").grid(row=4, column=0, sticky="w", **pad)
+        ttk.Spinbox(f, from_=0.5, to=2.0, increment=0.1, textvariable=self.tts_rate, width=6).grid(
+            row=4, column=1, sticky="w", **pad)
+        ttk.Button(f, text="▶ Проверить голос", command=self.tts_test).grid(row=4, column=2, columnspan=2, sticky="w", **pad)
+        ttk.Label(f, text="Авто: если Voicebox запущен — говорит он (со своими клонами), иначе встроенный голос. "
+                          "Piper — офлайн, голоса качаются один раз.", foreground="#777", wraplength=520, justify="left"
+                  ).grid(row=5, column=0, columnspan=4, sticky="w", **pad)
+        self.root.after(300, self._tts_status_refresh)
 
         f = box("Распознавание речи (faster-whisper)")
         ttk.Label(f, text="Модель").grid(row=0, column=0, sticky="w", **pad)
@@ -21193,6 +21517,10 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
         self.vb_engine.set(normalize_engine(self.vb_engine.get()))  # старые настройки: qwen3-tts -> qwen
         if self.vb_method.get() not in VB_METHODS:
             self.vb_method.set(list(VB_METHODS)[0])
+        if self.tts_engine.get() not in TTS_ENGINES:
+            self.tts_engine.set(list(TTS_ENGINES)[0])
+        if self.piper_voice.get() not in PIPER_VOICES:
+            self.piper_voice.set(list(PIPER_VOICES)[0])
         if self.mode.get() not in MODES:
             self.mode.set(MODE_TOGGLE)
         if s.get("prompt_name") in self.prompts:
@@ -22916,13 +23244,21 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
                 pass  # звук недоступен по API — значит, его играет сам Voicebox
         return None, max(1.0, len(text) / 14)  # оценка длительности для ожидания и аватара
 
-    def _synth(self, cfg, text):
-        text = clean_for_tts(text)
-        if self._pron_on and self._pron:
-            text = apply_pron(text, self._pron)
-        if not text:
-            return None
-        t0 = time.perf_counter()
+    def _vb_alive(self, cfg):
+        """Отвечает ли Voicebox (кэш: живой — 20 с, молчит — 6 с), чтобы режим «авто» не тормозил."""
+        url = cfg["vb_url"]
+        c = getattr(self, "_vb_alive_c", None)
+        now = time.time()
+        if c and c[0] == url and now < c[1]:
+            return c[2]
+        try:
+            ok = requests.get(f"{url}/health", timeout=1.2).status_code < 500
+        except Exception:
+            ok = False
+        self._vb_alive_c = (url, now + (20 if ok else 6), ok)
+        return ok
+
+    def _synth_vb(self, cfg, text):
         method = cfg["vb_method"]
         audio = None
         if method in ("auto", "generate"):
@@ -22934,6 +23270,41 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
                 self.append("Voicebox", f"{e}. Пробую /speak…", "tool")
         if audio is None:
             audio = self._vb_speak(cfg, text)
+        return audio
+
+    def _synth_builtin(self, cfg, text, only=None):
+        errs = []
+        for kind in ([only] if only else builtin_order(cfg)):
+            try:
+                return builtin_synth(kind, cfg, text)
+            except Exception as e:
+                errs.append(f"{'Piper' if kind == 'piper' else 'SAPI'}: {e}")
+                if only:
+                    break
+        raise RuntimeError("Нет рабочего встроенного голоса. " + ("; ".join(errs) if errs else
+                           "Установите Piper и скачайте голос (вкладка «Функции» → «Голос по умолчанию»)."))
+
+    def _synth(self, cfg, text):
+        text = clean_for_tts(text)
+        if self._pron_on and self._pron:
+            text = apply_pron(text, self._pron)
+        if not text:
+            return None
+        t0 = time.perf_counter()
+        eng = cfg.get("tts_engine", "voicebox")
+        if eng in ("piper", "windows"):
+            audio = self._synth_builtin(cfg, text, only=eng)
+        elif eng == "auto" and not self._vb_alive(cfg):
+            audio = self._synth_builtin(cfg, text)
+        else:
+            try:
+                audio = self._synth_vb(cfg, text)
+            except Exception as e:
+                if eng != "auto":
+                    raise
+                self._vb_alive_c = (cfg["vb_url"], time.time() + 30, False)
+                self.append("Голос", f"Voicebox недоступен ({e}) — говорю встроенным голосом", "tool")
+                audio = self._synth_builtin(cfg, text)
         self.timing["tts"] = time.perf_counter() - t0
         return audio
 
