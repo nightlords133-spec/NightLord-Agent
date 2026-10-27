@@ -1,12 +1,12 @@
 """
 Сборка Nightlord агента в exe (Windows) через PyInstaller.
 
-Запуск:   py -3.12 build_exe.py            — лёгкая сборка: ядро (Whisper на CPU, звук, интерфейс, плагины, поиск).
+Запуск:   py -3.12 setup/build_exe.py            — лёгкая сборка: ядро (Whisper на CPU, звук, интерфейс, плагины, поиск).
                                              Необязательное (CUDA, трей, PDF, SOCKS, тема, мониторинг GPU) в exe НЕ входит
                                              и докачивается во вкладке «Компоненты»
-          py -3.12 build_exe.py --full     — положить в exe и необязательные пакеты, если они установлены у вас
-          py -3.12 build_exe.py --with-gpu — положить в exe ещё и библиотеки CUDA из pip (+1–2 ГБ; обычно лучше докачка)
-          py -3.12 build_exe.py --onefile  — один файл вместо папки (запускается медленнее, антивирусы ругаются чаще)
+          py -3.12 setup/build_exe.py --full     — положить в exe и необязательные пакеты, если они установлены у вас
+          py -3.12 setup/build_exe.py --with-gpu — положить в exe ещё и библиотеки CUDA из pip (+1–2 ГБ; обычно лучше докачка)
+          py -3.12 setup/build_exe.py --onefile  — один файл вместо папки (запускается медленнее, антивирусы ругаются чаще)
 
 Результат: папка dist/NightlordAgent/ с NightlordAgent.exe. Её можно копировать целиком. Файлы настроек
 (settings.json, memory.json, pronounce.json…) создаются рядом с NightlordAgent.exe.
@@ -22,7 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+SETUP = Path(__file__).resolve().parent              # здесь лежит сам скрипт (папка setup)
+HERE = SETUP if (SETUP / "voice_agent.py").is_file() else SETUP.parent     # папка агента с voice_agent.py
 APP = HERE / "voice_agent.py"
 NAME = "NightlordAgent"
 HIDDEN = ["pynput.keyboard._win32", "pynput.mouse._win32", "sounddevice", "soundfile", "PIL.ImageGrab", "PIL.ImageTk", "sqlite3", "_sqlite3", "zipfile", "ctypes.wintypes"]
@@ -73,7 +74,7 @@ def main():
         subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--name", NAME,
            "--onefile" if "--onefile" in args else "--onedir"]
-    ico = Path(__file__).with_name("nightlord.ico")
+    ico = SETUP / "nightlord.ico"
     if ico.exists():
         cmd += ["--icon", str(ico), "--add-data", str(ico) + os.pathsep + "."]
     full = "--full" in args or "--with-gpu" in args
@@ -105,8 +106,8 @@ def main():
         sys.exit("Сборка не удалась, см. сообщения выше.")
     out = HERE / "dist" / (NAME if "--onefile" not in args else f"{NAME}.exe")
     for fname in ("check_deps.py",):
-        if (HERE / fname).is_file() and out.is_dir():
-            shutil.copy2(HERE / fname, out / fname)
+        if (SETUP / fname).is_file() and out.is_dir():
+            shutil.copy2(SETUP / fname, out / fname)
     print(f"\nГотово: {out}")
     if out.is_dir():
         report_sizes(out)
@@ -120,7 +121,7 @@ def _run():
     try:
         print(f"Python {sys.version.split()[0]}, папка {HERE}")
         if sys.version_info < (3, 9):
-            raise SystemExit("Нужен Python 3.9+ (лучше 3.12): запускайте  py -3.12 build_exe.py")
+            raise SystemExit("Нужен Python 3.9+ (лучше 3.12): запускайте  py -3.12 setup/build_exe.py")
         main()
     except SystemExit as e:
         code = 0 if e.code in (None, 0) else 1
@@ -135,10 +136,13 @@ def _run():
     except OSError:
         pass
     print("\nГотово без ошибок." if code == 0 else "\nСборка не удалась. Скопируйте текст выше и пришлите.")
-    try:
-        input("\nНажмите Enter, чтобы закрыть окно…")
-    except EOFError:
-        pass
+    # из установщика (--no-pause) или без консоли паузу не делаем — иначе процесс висит и установщик ждёт
+    if "--no-pause" not in sys.argv and not os.environ.get("NL_NOPAUSE"):
+        try:
+            if sys.stdin and sys.stdin.isatty():
+                input("\nНажмите Enter, чтобы закрыть окно…")
+        except (EOFError, OSError):
+            pass
     return code
 
 

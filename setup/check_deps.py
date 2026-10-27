@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Проверка зависимостей для voice_agent.py и установка недостающих.
 
-Запуск:   py -3.12 check_deps.py            (спросит, что установить)
-          py -3.12 check_deps.py --yes      (поставить всё недостающее без вопросов)
-          py -3.12 check_deps.py --check    (только проверить, ничего не ставить)
-          py -3.12 check_deps.py --required (при --yes ставить только обязательное)
+Запуск:   py -3.12 setup/check_deps.py            (спросит, что установить)
+          py -3.12 setup/check_deps.py --yes      (поставить всё недостающее без вопросов)
+          py -3.12 setup/check_deps.py --check    (только проверить, ничего не ставить)
+          py -3.12 setup/check_deps.py --required (при --yes ставить только обязательное)
 Показывает также, чего не хватает каждому плагину, и расходятся ли файлы в plugins/ со встроенными версиями.
 Использует только стандартную библиотеку. Ставит пакеты тем же Python, которым запущен.
 """
@@ -46,7 +46,7 @@ PACKAGES = [
     ("uiautomation", ("uiautomation",), "дерево элементов окон Windows (инструмент «Зрение»)", False, WIN, "screen_vision"),
     ("piper-tts", ("piper",), "встроенный офлайн-голос Piper (агент говорит без Voicebox)", False, ANY, ""),
     ("yt-dlp", ("yt_dlp",), "субтитры и звук видео для пересказа (YouTube, VK Видео, Rutube)", False, ANY, "video_summary"),
-    ("pyinstaller", ("PyInstaller",), "сборка агента в exe (py build_exe.py)", False, ANY, ""),
+    ("pyinstaller", ("PyInstaller",), "сборка агента в exe (py setup/build_exe.py)", False, ANY, ""),
     ("nvidia-cublas-cu12", ("nvidia.cublas",), "Whisper на GPU (CUDA 12), только Windows/Linux с NVIDIA", False, ANY, ""),
     ("nvidia-cudnn-cu12==9.*", ("nvidia.cudnn",), "Whisper на GPU (CUDA 12), только Windows/Linux с NVIDIA", False, ANY, ""),
 ]
@@ -70,6 +70,8 @@ PLUGIN_NEEDS = {
 
 OK, BAD, WARN = "[ OK ]", "[ -- ]", "[ !! ]"
 HERE = os.path.dirname(os.path.abspath(__file__))
+if not os.path.isfile(os.path.join(HERE, "voice_agent.py")) and os.path.isfile(os.path.join(os.path.dirname(HERE), "voice_agent.py")):
+    HERE = os.path.dirname(HERE)          # скрипт лежит в setup\, агент — на уровень выше
 IS_WIN = os.name == "nt"
 
 

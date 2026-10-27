@@ -7,7 +7,7 @@ Nightlord агент — голосовой агент: микрофон -> fast
   «Функции»    — включение/выключение дополнительных возможностей (каждая по галочке)
   «Плагины»    — дополнения из папки plugins (Telegram, VPN / прокси и свои), каждое включается отдельно
 
-Проверить и поставить зависимости одной командой:  py -3.12 check_deps.py
+Проверить и поставить зависимости одной командой:  py -3.12 setup/check_deps.py
 Вручную: pip install faster-whisper sounddevice soundfile numpy requests psutil pillow pynput nvidia-ml-py sv-ttk
 (необязательно: pystray — трей, pypdf — чтение PDF; nvidia-ml-py — GPU NVIDIA, pynput — горячая клавиша и
 управление мышью/клавиатурой, pillow — скриншоты и спрайты аватара)
@@ -17,7 +17,7 @@ Nightlord агент — голосовой агент: микрофон -> fast
 быстрый ответ и прогрев, словарь произношения, подсказка Whisper, шумоподавление, «объясни выделенное/экран»,
 диктовка в активное окно, сценарии, резервная копия, виземы (форма рта по звуку), плагины (папка plugins:
 Telegram, VPN / прокси, свои).
-Сборка в exe: py build_exe.py
+Сборка в exe: py setup/build_exe.py
 """
 import base64
 import collections
@@ -60,6 +60,7 @@ import soundfile as sf
 APP_VERSION = "2026.10.25"                # версия программы (показывается в «О программе»)
 APP_AUTHOR = "NightLord РВЕ"
 UPDATE_EXTRA_FILES = ("check_deps.py", "build_exe.py", "README.txt", "start_agent.bat", "install_python.bat", "install_python.ps1")
+UPDATE_SETUP_FILES = ("check_deps.py", "build_exe.py", "install_python.bat", "install_python.ps1")   # лежат в папке setup\
 LM_URL = "http://localhost:1234"         # LM Studio -> Developer -> Start Server
 VOICEBOX_URL = "http://localhost:17493"  # Voicebox REST API
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
@@ -4512,7 +4513,8 @@ def update_inspect(src):
                 prefix = main.filename[:-len("voice_agent.py")]
                 for i in z.infolist():
                     nm = Path(i.filename).name
-                    if (not i.is_dir() and nm in UPDATE_EXTRA_FILES and i.filename == prefix + nm
+                    ok = i.filename == prefix + nm or (nm in UPDATE_SETUP_FILES and i.filename == prefix + "setup/" + nm)
+                    if (not i.is_dir() and nm in UPDATE_EXTRA_FILES and ok
                             and i.file_size < 5 * 1024 * 1024):
                         extras[nm] = z.read(i)
         elif src.suffix.lower() == ".py":
@@ -4537,6 +4539,35 @@ def update_inspect(src):
 UPD_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 UPD_BRANCH_RE = re.compile(r"^[A-Za-z0-9_./-]{1,100}$")
 UPD_MAX = 60 * 1024 * 1024
+
+
+UPD_DEFAULT_REPO = "nightlords133-spec/NightLord-Agent"
+
+
+def update_auto_token():
+    """Токен GitHub без ввода: переменные окружения, затем вход, сохранённый в GitHub CLI или Git (Credential Manager).
+    Ничего не спрашивает у пользователя; возвращает строку или ''."""
+    for k in ("GITHUB_TOKEN", "GH_TOKEN"):
+        if os.environ.get(k, "").strip():
+            return os.environ[k].strip()
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=8, env=env, creationflags=flags)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n", capture_output=True,
+                           text=True, timeout=10, env=env, creationflags=flags)
+        if r.returncode == 0:
+            for ln in r.stdout.splitlines():
+                if ln.startswith("password="):
+                    return ln[9:].strip()
+    except Exception:
+        pass
+    return ""
 
 
 def update_download(repo, branch="main", token="", dest=None):
@@ -4594,8 +4625,9 @@ def update_apply(info, base=None):
     done = []
     items = [("voice_agent.py", info["code"])] + sorted(info.get("extras", {}).items())
     for name, data in items:
-        dst = base / name
-        tmp = base / f".{name}.new"
+        sub = base / "setup" if (name in UPDATE_SETUP_FILES and (base / "setup").is_dir()) else base
+        dst = sub / name
+        tmp = sub / f".{name}.new"
         tmp.write_bytes(data)
         try:
             if dst.is_file():
@@ -4658,10 +4690,10 @@ class Extras2Mixin:
         self.macro_on = B(value=True)
         self.macro_confirm = B(value=True)
         self.avatar_vis = B(value=True)
-        self.upd_repo = S(value="")          # «владелец/имя» репозитория GitHub с обновлениями
+        self.upd_repo = S(value=UPD_DEFAULT_REPO)          # «владелец/имя» репозитория GitHub с обновлениями
         self.upd_branch = S(value="main")
         self.upd_token = S(value="")         # нужен только для приватного репозитория
-        self.upd_auto = B(value=False)       # раз в сутки при запуске спрашивать о новой версии
+        self.upd_auto = B(value=True)       # раз в сутки при запуске спрашивать о новой версии
         self.upd_last = S(value="")
         self.tts_engine = S(value=list(TTS_ENGINES)[0])   # встроенный TTS: режим
         self.piper_voice = S(value=list(PIPER_VOICES)[0])
@@ -5166,7 +5198,7 @@ class Extras2Mixin:
     def do_update_file(self):
         if getattr(sys, "frozen", False):
             messagebox.showinfo("Обновление", "Это собранный exe: заменить его изнутри нельзя. "
-                                              "Пересоберите exe из нового voice_agent.py (py build_exe.py).")
+                                              "Пересоберите exe из нового voice_agent.py (py setup/build_exe.py).")
             return
         src = filedialog.askopenfilename(title="Файл обновления: архив .zip или voice_agent.py",
                                          filetypes=[("Обновление", "*.zip *.py"), ("Все файлы", "*.*")])
@@ -5182,6 +5214,9 @@ class Extras2Mixin:
             return
         repo, branch, token = self.upd_repo.get().strip(), self.upd_branch.get().strip() or "main", self.upd_token.get().strip()
         if not repo:
+            repo = UPD_DEFAULT_REPO
+            self.upd_repo.set(repo)
+        if not repo:
             if not auto:
                 messagebox.showinfo("Обновление", "Укажите репозиторий GitHub в виде «владелец/имя».")
             return
@@ -5192,7 +5227,18 @@ class Extras2Mixin:
 
         def work():
             try:
-                path = update_download(repo, branch, token)
+                try:
+                    path = update_download(repo, branch, token)
+                except RuntimeError as e:
+                    if token or "нужен токен" not in str(e):
+                        raise
+                    self.ui(lambda: self.status.set("Репозиторий приватный — беру вход GitHub из Git/gh…"))
+                    t2 = update_auto_token()
+                    if not t2:
+                        raise RuntimeError("репозиторий приватный, а сохранённого входа GitHub не нашлось. Один раз вставьте токен "
+                                           "в поле «токен» (GitHub → Settings → Developer settings → Fine-grained tokens, "
+                                           "доступ Contents: Read-only к этому репозиторию) — дальше всё будет одной кнопкой")
+                    path = update_download(repo, branch, t2)
                 info = update_inspect(path)
                 try:
                     Path(path).unlink()
@@ -5341,7 +5387,7 @@ class Extras2Mixin:
         row.grid(row=2, column=1, sticky="w", **pad)
         ttk.Entry(row, textvariable=self.upd_branch, width=10).pack(side="left")
         ttk.Entry(row, textvariable=self.upd_token, width=22, show="•").pack(side="left", padx=(6, 0))
-        ttk.Button(f, text="Проверить обновления на GitHub", command=self.check_github_update).grid(
+        ttk.Button(f, text="⬆ Обновить с GitHub", command=self.check_github_update).grid(
             row=3, column=0, sticky="w", **pad)
         ttk.Checkbutton(f, text="Раз в сутки при запуске проверять и спрашивать, если есть новая версия",
                         variable=self.upd_auto).grid(row=3, column=1, sticky="w", **pad)
@@ -5356,7 +5402,7 @@ class Extras2Mixin:
         hint(f, "В копию входят настройки, промты, профили, программы, память, напоминания, словарь, сценарии, заметки, "
                 "настройки всех плагинов (ключи, токены, подписки) и свои спрайты аватара. Код плагинов не входит: "
                 "на новом ПК они ставятся из встроенных; если версии совпадают, включены как раньше. "
-                "Сборка в exe: py build_exe.py (подробности внутри файла).", 1, 2)
+                "Сборка в exe: py setup/build_exe.py (подробности внутри файла).", 1, 2)
 
 
 # ------------------------------- плагины -------------------------------
@@ -21517,6 +21563,8 @@ class App(ExtrasMixin, Extras2Mixin, PluginsMixin, ComponentsMixin):
         self.vb_engine.set(normalize_engine(self.vb_engine.get()))  # старые настройки: qwen3-tts -> qwen
         if self.vb_method.get() not in VB_METHODS:
             self.vb_method.set(list(VB_METHODS)[0])
+        if not self.upd_repo.get().strip():
+            self.upd_repo.set(UPD_DEFAULT_REPO)
         if self.tts_engine.get() not in TTS_ENGINES:
             self.tts_engine.set(list(TTS_ENGINES)[0])
         if self.piper_voice.get() not in PIPER_VOICES:

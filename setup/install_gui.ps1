@@ -1,9 +1,11 @@
 ﻿# Установщик Nightlord агента с окном: 1) Python 3.12  2) пакеты  3) ярлык и запуск  4) сборка в exe.
 # Запуск: двойной щелчок по «Установщик.bat». Работает на встроенном PowerShell Windows 10/11, Python для запуска не нужен.
-# Файлы voice_agent.py, check_deps.py, build_exe.py, install_python.ps1 должны лежать в той же папке.
+# voice_agent.py лежит в папке агента, check_deps.py, build_exe.py, install_python.ps1, install_vpn.ps1 — в setup\ рядом с этим файлом.
 param([switch]$SelfTest)        # -SelfTest: только проверка логики без окна (для разработки)
 $ErrorActionPreference = "Stop"
-$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Setup = Split-Path -Parent $MyInvocation.MyCommand.Path          # папка setup\ со скриптами установки
+# $Here — папка агента (там voice_agent.py): на уровень выше setup\; если скрипты лежат вперемешку с агентом — та же папка
+$Here = $(if (Test-Path (Join-Path $Setup "voice_agent.py")) { $Setup } else { Split-Path -Parent $Setup })
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUNBUFFERED = "1"
 
@@ -14,7 +16,7 @@ function Refresh-Path {
 }
 
 $script:gui = $false
-$script:vpnLib = Join-Path $Here "install_vpn.ps1"
+$script:vpnLib = Join-Path $Setup "install_vpn.ps1"
 if (Test-Path $script:vpnLib) { . $script:vpnLib; $script:vpnAvail = $true } else { $script:vpnAvail = $false }
 $script:depsTimeoutMs = 90000
 function Run-Quick([string]$exe, [string[]]$argList, [int]$timeoutMs) {
@@ -49,7 +51,7 @@ function Find-Python312 {
 
 function Get-Deps([string]$py) {
     # Состояние пакетов от check_deps.py --json; $null, если не получилось. Ждёт не дольше 90 с и не замораживает окно.
-    $deps = Join-Path $Here "check_deps.py"
+    $deps = Join-Path $Setup "check_deps.py"
     $script:depsErr = ""
     if (-not $py -or -not (Test-Path $deps)) { $script:depsErr = "нет check_deps.py рядом с установщиком"; return $null }
     try {
@@ -123,7 +125,7 @@ function Make-Shortcut([string]$py, [bool]$console) {
     $s.TargetPath = $(if ($console) { $py } else { Get-Pyw $py })
     $s.Arguments = '"' + (Join-Path $Here "voice_agent.py") + '"'
     $s.WorkingDirectory = $Here
-    $ico = Join-Path $Here "nightlord.ico"
+    $ico = Join-Path $Setup "nightlord.ico"
     if (Test-Path $ico) { $s.IconLocation = $ico }
     $s.Description = "Nightlord агент"
     $s.Save()
@@ -151,7 +153,7 @@ $form.StartPosition = "CenterScreen"
 $form.ClientSize = New-Object System.Drawing.Size(780, 924)
 $form.MinimumSize = New-Object System.Drawing.Size(780, 784)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
-$ico = Join-Path $Here "nightlord.ico"
+$ico = Join-Path $Setup "nightlord.ico"
 if (Test-Path $ico) { try { $form.Icon = New-Object System.Drawing.Icon($ico) } catch {} }
 
 $script:dy = 0
@@ -445,7 +447,7 @@ $btnVd.Add_Click({
 
 # ---- кнопки
 $btnPy.Add_Click({
-    $ps1 = Join-Path $Here "install_python.ps1"
+    $ps1 = Join-Path $Setup "install_python.ps1"
     if (-not (Test-Path $ps1)) { [System.Windows.Forms.MessageBox]::Show("Рядом нет install_python.ps1", "Установщик") | Out-Null; return }
     Enqueue "Установка Python 3.12 (winget или установщик с python.org с проверкой хэша и подписи)" "powershell.exe" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ps1, "-NoPrompt") $Here {
         param($code)
@@ -494,9 +496,9 @@ $btnRun.Add_Click({
     Log "Агент запущен."
 })
 $btnExe.Add_Click({
-    $be = Join-Path $Here "build_exe.py"
+    $be = Join-Path $Setup "build_exe.py"
     if (-not (Test-Path $be)) { [System.Windows.Forms.MessageBox]::Show("Рядом нет build_exe.py", "Установщик") | Out-Null; return }
-    $flags = @(); if ($chkOne.Checked) { $flags += "--onefile" }; if ($chkFull.Checked) { $flags += "--full" }
+    $flags = @("--no-pause"); if ($chkOne.Checked) { $flags += "--onefile" }; if ($chkFull.Checked) { $flags += "--full" }
     $has = $false
     try { & $script:py -c "import PyInstaller" 2>$null; $has = ($LASTEXITCODE -eq 0) } catch {}
     if (-not $has) { Enqueue "Установка PyInstaller" $script:py @("-m", "pip", "install", "pyinstaller") $Here { param($c) if ($c -ne 0) { Log "PyInstaller не поставился — сборка может не получиться." } } }

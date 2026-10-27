@@ -10,7 +10,8 @@ function Pause-Exit([int]$code) {
 }
 $Url  = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 $Md5  = "5eddb0b6f12c852725de071ae681dde4"      # с официальной страницы python.org/downloads/release/python-31210/
-$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Setup = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Here = $(if (Test-Path (Join-Path $Setup "voice_agent.py")) { $Setup } else { Split-Path -Parent $Setup })
 
 function Find-Python312 {
     # 1) лаунчер py
@@ -91,7 +92,7 @@ if ($py) {
 if ($NoPrompt) { Write-Host "PYTHON_OK=$py"; exit 0 }
 $ans = Read-Host "Установить пакеты для агента сейчас (check_deps.py --yes)? [Д/н]"
 if ($ans -eq "" -or $ans -match "^(д|да|y|yes)$") {
-    $deps = Join-Path $Here "check_deps.py"
+    $deps = Join-Path $Setup "check_deps.py"
     if (Test-Path $deps) { & $py $deps --yes } else { Write-Host "check_deps.py не найден рядом со скриптом." -ForegroundColor Yellow }
 }
 Write-Host ""

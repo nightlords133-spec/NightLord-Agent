@@ -1,21 +1,15 @@
-Nightlord агент — сборка от 25.10.2026 (версия 2026.10.25)
+Nightlord агент — сборка от 28.10.2026 (версия 2026.10.25)
 
-СОСТАВ
-  voice_agent.py   — сам агент (все плагины ниже уже встроены внутрь)
-  build_exe.py     — сборка в exe:  python build_exe.py            (папка)
-                                    python build_exe.py --onefile  (один файл)
-                     Иконку берёт из nightlord.ico, если файл лежит рядом.
-  check_deps.py    — проверка зависимостей
-  Установщик.bat   — УСТАНОВЩИК С ОКНОМ (запускайте его): шаг 1 — Python 3.12, шаг 2 — пакеты (галочки), шаг 3 — ярлык и
-                     запуск, шаг 4 — сборка в exe. Нужны рядом: install_gui.ps1, install_python.ps1, check_deps.py, build_exe.py.
-                     Работает на встроенном PowerShell, Python для самого установщика не нужен.
-  install_vpn.ps1  — модуль VPN для установщика (нужен рядом с install_gui.ps1): ссылка vless/vmess/trojan/ss, подписка или готовый HTTP-прокси;
-                     ядро Xray скачивается с GitHub в папку vpn_core. Трафик pip и Python идёт через него. Ничего не сохраняется, при закрытии отключается.
-  install_python.bat — установка Python 3.12 одним щелчком (winget или установщик с python.org с проверкой хэша и подписи),
-                     затем предлагает поставить пакеты через check_deps.py
-  start_agent.bat  — запуск агента: py -3.12 voice_agent.py
-  nightlord.ico / nightlord.png — иконка
-  plugins/         — те же плагины отдельными файлами (для справки или ручной замены)
+СОСТАВ (раскладка по папкам)
+  Установщик.bat        — окно установки (Python, пакеты, VPN, запуск, сборка exe)
+  start_agent.bat       — запуск агента
+  voice_agent.py        — сам агент
+  plugins\              — плагины (рядом с voice_agent.py)
+  setup\                — скрипты установки и сборки: install_gui.ps1, install_vpn.ps1, install_python.ps1/.bat,
+                          check_deps.py (проверка пакетов), build_exe.py (сборка exe), nightlord.ico/.png
+  Рядом с агентом при работе появятся settings.json, plugins.json, dialogs\ и т.п. — это ваши данные, не удаляйте.
+  Команды вручную: py -3.12 setup\check_deps.py, py -3.12 setup\build_exe.py. Старая «плоская» раскладка
+  (все файлы в одной папке) тоже работает.
 
 ПЛАГИНЫ (версия)
   chrome 1.0          управление Chrome: поиск, чтение страниц, клики, ввод; капчу просит пройти вручную
